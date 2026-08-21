@@ -1,0 +1,50 @@
+# 工程化基线配置（P2/M4）：pytest 测试、ruff 代码检查、mypy 类型检查。
+# 安装开发依赖：pip install pytest ruff mypy
+
+[project]
+name = "smart-qa"
+version = "0.3.0"
+description = "智慧问数系统：基于 LangChain 的 NL2SQL 自然语言数据库问答（FastAPI + MySQL + ECharts）"
+requires-python = ">=3.10"
+
+# ---------------------------------------------------------------- #
+# pytest：pytest 直接运行即可发现 tests/ 下全部测试
+# ---------------------------------------------------------------- #
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+# ---------------------------------------------------------------- #
+# ruff：基础规则集起步（E/W 风格 + F 常见错误 + I import 排序），
+# 存量代码先放宽行宽，逐步收紧
+# ---------------------------------------------------------------- #
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I"]
+ignore = [
+    "E501",  # 行宽由格式化工具负责，中文字符串常超宽
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]  # 测试需先设置环境变量/路径再导入
+
+# ---------------------------------------------------------------- #
+# mypy：渐进式类型检查。第三方库缺 stub 时不报错，
+# 先覆盖核心模块，再逐步对全库启用 --strict
+# ---------------------------------------------------------------- #
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+check_untyped_defs = true
+files = [
+    "sql_guard.py",
+    "qa_exceptions.py",
+    "schema_cache.py",
+    "chat_store.py",
+    "app.py",
+]

@@ -1,0 +1,15 @@
+PyMySQL==1.1.1
+SQLAlchemy>=2.0,<3.0
+sqlglot>=23.0
+langchain>=1.0,<2.0
+langchain-core>=1.0,<2.0
+langchain-openai>=1.0,<2.0
+# langgraph 被 langchain 间接依赖，显式锁定避免隐式版本漂移（报告 M5）
+langgraph>=1.0,<2.0
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.29,<1.0
+# 会话签名 cookie 序列化（原随 Flask 自带，迁移 FastAPI 后显式声明）
+itsdangerous>=2.1,<3.0
+python-dotenv>=1.0,<2.0
+# 会话历史 Redis 后端（可选）：仅 HISTORY_BACKEND=redis 时需要，未安装时自动降级为内存
+redis>=5.0

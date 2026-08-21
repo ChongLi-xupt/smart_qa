@@ -1,0 +1,18 @@
+2026-08-12 16:42:56,624 INFO [werkzeug] [-] [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on http://127.0.0.1:5001
+2026-08-12 16:42:56,625 INFO [werkzeug] [-] [33mPress CTRL+C to quit[0m
+2026-08-12 16:48:05,609 INFO [smart_qa_web] [ae42ae34] GET / -> 200 (15ms)
+2026-08-12 16:48:05,612 INFO [werkzeug] [-] 127.0.0.1 - - [12/Aug/2026 16:48:05] "GET / HTTP/1.1" 200 -
+2026-08-12 16:48:18,171 INFO [smart_qa_web] [d797e996] POST /api/v1/ask_stream -> 200 (0ms)
+2026-08-12 16:48:21,398 INFO [httpx] [-] HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-12 16:48:22,371 INFO [werkzeug] [-] 127.0.0.1 - - [12/Aug/2026 16:48:22] "POST /api/v1/ask_stream HTTP/1.1" 200 -
+2026-08-12 16:57:42,440 INFO [smart_qa_web] [2b75e5ac] GET / -> 200 (0ms)
+2026-08-12 16:57:42,442 INFO [werkzeug] [-] 127.0.0.1 - - [12/Aug/2026 16:57:42] "GET / HTTP/1.1" 200 -
+2026-08-12 16:57:45,036 INFO [smart_qa_web] [97c1560a] POST /api/v1/ask_stream -> 200 (0ms)
+2026-08-12 16:57:45,424 INFO [httpx] [-] HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-12 16:57:46,172 INFO [werkzeug] [-] 127.0.0.1 - - [12/Aug/2026 16:57:46] "POST /api/v1/ask_stream HTTP/1.1" 200 -
+2026-08-12 17:21:59,615 INFO [smart_qa_web] [cb60117d] GET / -> 200 (14ms)
+2026-08-12 17:21:59,618 INFO [werkzeug] [-] 127.0.0.1 - - [12/Aug/2026 17:21:59] "GET / HTTP/1.1" 200 -
+2026-08-12 17:22:02,390 INFO [smart_qa_web] [53cb6156] POST /api/v1/ask_stream -> 200 (0ms)
+2026-08-12 17:22:02,760 INFO [httpx] [-] HTTP Request: POST https://api.deepseek.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-12 17:22:03,408 INFO [werkzeug] [-] 127.0.0.1 - - [12/Aug/2026 17:22:03] "POST /api/v1/ask_stream HTTP/1.1" 200 -

@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智慧问数</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+    <!-- DOMPurify：对 LLM 输出的 HTML 做安全净化，防止 XSS 注入 -->
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+            background: #f0f2f5;
+            height: 100vh;
+            display: flex;
+            flex-direction: row;
+            overflow-x: hidden;
+        }
+
+        /* ---------- 侧边栏（历史会话） ---------- */
+        #sidebar {
+            width: 260px;
+            flex-shrink: 0;
+            margin-left: 0;
+            background: #fff;
+            border-right: 1px solid #e5e7eb;
+            display: flex;
+            flex-direction: column;
+            /* 折叠/展开：整体向左平移滑出，宽度不变，内部内容不被挤压；
+               右侧 #main 为 flex:1，自动填补释放的空间 */
+            transition: margin-left .3s ease-in-out;
+        }
+        html.sidebar-collapsed #sidebar { margin-left: -260px; }
+
+        /* 侧边栏折叠开关：悬浮在侧边栏右缘（与主区交界），收起后停驻页面左缘 */
+        #sidebar-toggle {
+            position: fixed;
+            left: 247px;            /* 260 - 13：圆心骑在侧边栏右缘线上 */
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 40;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: 1px solid #cbd5e1;
+            background: #fff;
+            color: #2a5298;
+            font-size: 14px;
+            line-height: 1;
+            cursor: pointer;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, .18);
+            transition: left .3s ease-in-out, background .15s, border-color .15s;
+        }
+        #sidebar-toggle:hover { background: #eaf1fb; border-color: #2a5298; }
+        html.sidebar-collapsed #sidebar-toggle { left: 8px; }
+
+        .sidebar-header { padding: 14px 12px 10px; border-bottom: 1px solid #f0f2f5; }
+        #new-chat-btn {
+            width: 100%;
+            background: #2a5298;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 0;
+            font-size: 13.5px;
+            cursor: pointer;
+            transition: background .15s;
+        }
+        #new-chat-btn:hover { background: #1e3c72; }
+        #new-chat-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+        #session-list { flex: 1; overflow-y: auto; }
+        .session-empty {
+            padding: 24px 16px;
+            text-align: center;
+            font-size: 12px;
+            color: #94a3b8;
+            line-height: 1.8;
+        }
+        .session-item {
+            position: relative;
+            padding: 10px 30px 10px 14px;
+            cursor: pointer;
+            border-bottom: 1px solid #f0f2f5;
+            border-left: 3px solid transparent;
+            transition: background .12s;
+        }
+        .session-item:hover { background: #f0f4fb; }
+        .session-item.active { background: #eaf1fb; border-left-color: #2a5298; }
+        .session-title {
+            font-size: 13px;
+            color: #1f2937;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .session-item.active .session-title { color: #1e3c72; font-weight: 600; }
+        .session-meta { font-size: 11px; color: #94a3b8; margin-top: 4px; }
+        .session-del {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            border: none;
+            background: transparent;
+            color: #94a3b8;
+            font-size: 16px;
+            line-height: 1;
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 4px;
+            opacity: 0;
+            transition: opacity .12s;
+        }
+        .session-item:hover .session-del { opacity: 1; }
+        .session-del:hover { color: #b91c1c; background: #fef2f2; }
+
+        /* ---------- 右侧主区 ---------- */
+        #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+        /* ---------- 顶部标题栏 ---------- */
+        header {
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            color: #fff;
+            padding: 14px 24px;
+            display: flex;
+            align-items: baseline;
+            gap: 12px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, .15);
+        }
+        header h1 { font-size: 20px; font-weight: 600; }
+        header span { font-size: 12px; opacity: .75; }
+
+        /* ---------- 对话区 ---------- */
+        #chat {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .msg { display: flex; gap: 10px; max-width: 900px; width: 100%; margin: 0 auto; }
+        .msg.user { justify-content: flex-end; }
+
+        .avatar {
+            width: 36px; height: 36px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 18px; flex-shrink: 0;
+        }
+        .msg.bot .avatar { background: #2a5298; color: #fff; }
+
+        .bubble {
+            padding: 12px 16px;
+            border-radius: 10px;
+            line-height: 1.7;
+            font-size: 14px;
+            word-break: break-word;
+        }
+        .msg.user .bubble {
+            background: #2a5298;
+            color: #fff;
+            border-top-right-radius: 2px;
+            max-width: 70%;
+        }
+        .msg.bot .bubble {
+            background: #fff;
+            border: 1px solid #e5e7eb;
+            border-top-left-radius: 2px;
+            flex: 1;
+        }
+        .msg.bot .bubble.error { border-color: #fca5a5; background: #fef2f2; color: #b91c1c; }
+
+        /* Markdown 渲染样式 */
+        .answer-body p { margin: 6px 0; }
+        .answer-body pre {
+            background: #0f172a;
+            color: #e2e8f0;
+            padding: 10px 12px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 12.5px;
+            margin: 8px 0;
+        }
+        .answer-body code { font-family: Consolas, "Courier New", monospace; }
+        .answer-body :not(pre) > code {
+            background: #f1f5f9;
+            padding: 1px 5px;
+            border-radius: 4px;
+            color: #c2410c;
+        }
+        .answer-body ul, .answer-body ol { padding-left: 22px; margin: 6px 0; }
+        .answer-body strong { color: #1e3c72; }
+        .answer-body table { border-collapse: collapse; margin: 8px 0; }
+        .answer-body th, .answer-body td { border: 1px solid #e5e7eb; padding: 4px 10px; }
+
+        /* ---------- 图表卡片 ---------- */
+        .chart-card {
+            margin-top: 12px;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            background: #fafafa;
+            padding: 12px;
+        }
+        .chart-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+        }
+        .chart-toolbar .hint { font-size: 12px; color: #6b7280; margin-right: auto; }
+        .chart-btn {
+            border: 1px solid #cbd5e1;
+            background: #fff;
+            color: #334155;
+            padding: 4px 14px;
+            border-radius: 16px;
+            font-size: 12.5px;
+            cursor: pointer;
+            transition: all .15s;
+        }
+        .chart-btn:hover { border-color: #2a5298; color: #2a5298; }
+        .chart-btn.active { background: #2a5298; border-color: #2a5298; color: #fff; }
+
+        .chart-box { width: 100%; height: 340px; }
+
+        /* ---------- 折叠面板（SQL / 数据 / 过程） ---------- */
+        details { margin-top: 10px; border-top: 1px dashed #e5e7eb; padding-top: 8px; }
+        details summary {
+            cursor: pointer;
+            font-size: 13px;
+            color: #2a5298;
+            font-weight: 600;
+            user-select: none;
+        }
+        details pre.sql-block {
+            background: #0f172a;
+            color: #7dd3fc;
+            padding: 10px 12px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 12.5px;
+            margin-top: 8px;
+        }
+
+        .data-table-wrap { overflow-x: auto; margin-top: 8px; max-height: 260px; overflow-y: auto; }
+        .data-table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+        .data-table th {
+            background: #2a5298;
+            color: #fff;
+            position: sticky;
+            top: 0;
+        }
+        .data-table th, .data-table td {
+            border: 1px solid #e5e7eb;
+            padding: 5px 10px;
+            text-align: left;
+            white-space: nowrap;
+        }
+        .data-table tr:nth-child(even) td { background: #f8fafc; }
+
+        .steps-list { font-size: 12.5px; color: #475569; margin-top: 8px; padding-left: 4px; }
+        .steps-list li { margin-bottom: 6px; line-height: 1.6; }
+        .steps-list .tool-name { color: #2a5298; font-weight: 600; }
+
+        /* ---------- 加载动画 ---------- */
+        .typing { display: inline-flex; gap: 5px; padding: 4px 0; }
+        .typing i {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #2a5298;
+            animation: blink 1.2s infinite;
+        }
+        .typing i:nth-child(2) { animation-delay: .2s; }
+        .typing i:nth-child(3) { animation-delay: .4s; }
+        @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+
+        /* ---------- 输入区 ---------- */
+        #input-bar {
+            background: #fff;
+            border-top: 1px solid #e5e7eb;
+            padding: 14px 20px;
+        }
+        #input-wrap {
+            max-width: 900px;
+            margin: 0 auto;
+            display: flex;
+            gap: 10px;
+        }
+        #question-input {
+            flex: 1;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-size: 14px;
+            outline: none;
+            resize: none;
+            height: 44px;
+            font-family: inherit;
+        }
+        #question-input:focus { border-color: #2a5298; box-shadow: 0 0 0 2px rgba(42, 82, 152, .15); }
+        #ask-btn {
+            background: #2a5298;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: 0 26px;
+            font-size: 15px;
+            cursor: pointer;
+            transition: background .15s;
+        }
+        #ask-btn:hover { background: #1e3c72; }
+        #ask-btn:disabled { background: #94a3b8; cursor: not-allowed; }
+        .input-tip { max-width: 900px; margin: 6px auto 0; font-size: 12px; color: #94a3b8; }
+
+        /* ---------- 流式进度与反馈（P3-15 / P3-18） ---------- */
+        .stream-steps { font-size: 12.5px; color: #475569; margin-top: 8px; }
+        .stream-step { margin: 3px 0; line-height: 1.5; }
+        .stream-answer { margin-top: 8px; }
+        .stream-status { margin-top: 8px; font-size: 12.5px; color: #64748b; }
+        .feedback { margin-top: 10px; display: flex; gap: 8px; align-items: center; }
+        .feedback-btn { border: 1px solid #e2e8f0; background: #fff; border-radius: 8px;
+            padding: 3px 12px; cursor: pointer; font-size: 12.5px; color: #475569; }
+        .feedback-btn:hover { border-color: #2a5298; color: #2a5298; }
+        .feedback-btn.active { background: #eaf1fb; border-color: #2a5298; color: #2a5298; }
+        .feedback-btn:disabled { cursor: default; opacity: .8; }
+        .feedback-done { font-size: 12.5px; color: #16a34a; }
+    </style>
+    <script>
+        // 提前应用侧边栏折叠状态，避免页面刷新时闪烁
+        try {
+            if (localStorage.getItem('smartqa_sidebar_collapsed') === '1') {
+                document.documentElement.classList.add('sidebar-collapsed');
+            }
+        } catch (err) { /* localStorage 不可用时按默认展开处理 */ }
+    </script>
+</head>
+<body>
+    <button id="sidebar-toggle" type="button" title="收起侧边栏" aria-label="收起侧边栏" aria-expanded="true">«</button>
+
+    <aside id="sidebar">
+        <div class="sidebar-header">
+            <button id="new-chat-btn">＋ 新对话</button>
+        </div>
+        <div id="session-list"></div>
+    </aside>
+
+    <div id="main">
+        <header>
+            <h1>智慧问数</h1>
+            <span>用自然语言提问，自动查询数据库并生成图表（支持多轮上下文追问）</span>
+        </header>
+
+        <div id="chat">
+            <div class="msg bot">
+                <div class="avatar">智</div>
+                <div class="bubble">
+                    你好，我是智慧问数助手。请输入你想查询的问题，例如：<br>
+                    “统计每个用户的视频分析数量”、“最近 7 天每天新增多少用户”、“各状态数据的占比”……
+                </div>
+            </div>
+        </div>
+
+        <div id="input-bar">
+            <div id="input-wrap">
+                <textarea id="question-input" placeholder="请输入问题，Enter 发送，Shift+Enter 换行"></textarea>
+                <button id="ask-btn">提问</button>
+            </div>
+            <div class="input-tip">回答由大模型基于数据库实时生成，图表类型自动推断，也可手动切换。</div>
+        </div>
+    </div>
+
+    <script>
+        const chatEl = document.getElementById('chat');
+        const inputEl = document.getElementById('question-input');
+        const askBtn = document.getElementById('ask-btn');
+        const newChatBtn = document.getElementById('new-chat-btn');
+
+        // 欢迎语模板：新建/空会话时用于重置界面
+        const WELCOME_HTML = chatEl.innerHTML;
+
+        let pending = false;          // 是否有请求进行中
+        let chartSeq = 0;             // 图表实例计数，用于生成唯一 DOM id
+        let currentSessionId = null;  // 当前活动会话（由后端 cookie 决定，经 /sessions 返回）
+
+        /* ====================== 工具函数 ====================== */
+
+        function escapeHtml(text) {
+            return String(text ?? '')
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        function renderMarkdown(text) {
+            if (window.marked && window.DOMPurify) {
+                // marked 只负责 Markdown→HTML，DOMPurify 负责清洗危险标签/事件属性，
+                // 防止 LLM 输出（可能被提示注入诱导）携带脚本执行
+                return DOMPurify.sanitize(marked.parse(text));
+            }
+            // marked 或 DOMPurify 加载失败时的降级展示：纯文本转义，绝不渲染原始 HTML
+            return '<p>' + escapeHtml(text).replace(/\n/g, '<br>') + '</p>';
+        }
+
+        function isNumberLike(v) {
+            if (v === null || v === undefined || v === '') return false;
+            if (typeof v === 'number') return true;
+            if (typeof v === 'boolean') return false;
+            const n = Number(String(v).replace(/,/g, ''));
+            return !isNaN(n) && isFinite(n);
+        }
+
+        function isDateLike(v) {
+            if (typeof v !== 'string') return false;
+            return /^\d{4}([-/年]\d{1,2}([-/月]\d{1,2}日?)?)?([ T]?\d{1,2}:\d{2}(:\d{2})?)?$/.test(v.trim());
+        }
+
+        function toNumber(v) {
+            return Number(String(v).replace(/,/g, ''));
+        }
+
+        /** 与后端 chart_builder.classify_columns 保持一致的列类型推断 */
+        function classifyColumns(columns, rows) {
+            return columns.map((_, idx) => {
+                const values = rows
+                    .map(r => r[idx])
+                    .filter(v => v !== null && v !== undefined && String(v).trim() !== '');
+                if (!values.length) return 'category';
+                if (values.every(isNumberLike)) return 'number';
+                if (values.every(isDateLike)) return 'date';
+                return 'category';
+            });
+        }
+
+        function relativeTime(iso) {
+            if (!iso) return '';
+            const diff = Date.now() - new Date(iso).getTime();
+            if (!isFinite(diff) || diff < 0) return '';
+            const min = Math.floor(diff / 60000);
+            if (min < 1) return '刚刚';
+            if (min < 60) return min + ' 分钟前';
+            const hour = Math.floor(min / 60);
+            if (hour < 24) return hour + ' 小时前';
+            const day = Math.floor(hour / 24);
+            if (day < 7) return day + ' 天前';
+            return new Date(iso).toLocaleDateString('zh-CN');
+        }
+
+        /* ====================== ECharts 配置构建 ====================== */
+
+        /** 根据图表类型构建 ECharts option；无法绘图时返回 null。
+         *  kindsOverride：后端 chart_builder 已推断的列类型（P3-18），
+         *  存在时直接使用，避免前后端重复推断。 */
+        function buildChartOption(type, question, data, kindsOverride) {
+            const columns = data.columns || [];
+            const rows = data.rows || [];
+            if (!columns.length || !rows.length) return null;
+
+            const kinds = (Array.isArray(kindsOverride) && kindsOverride.length === columns.length)
+                ? kindsOverride
+                : classifyColumns(columns, rows);
+            const numberIdx = kinds
+                .map((k, i) => (k === 'number' ? i : -1))
+                .filter(i => i >= 0);
+            if (!numberIdx.length) return null;
+
+            const title = question.length > 24 ? question.slice(0, 24) + '…' : question;
+
+            if (type === 'pie') {
+                // 名称列：优先取类别列，其次日期列
+                let nameIdx = kinds.findIndex(k => k === 'category');
+                if (nameIdx < 0) nameIdx = kinds.findIndex(k => k === 'date');
+                const valueIdx = numberIdx[0];
+                return {
+                    title: { text: title, left: 'center', textStyle: { fontSize: 14 } },
+                    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+                    legend: { orient: 'vertical', left: 'left', top: 'middle' },
+                    series: [{
+                        type: 'pie',
+                        radius: ['35%', '65%'],
+                        center: ['60%', '55%'],
+                        data: rows.map(r => ({
+                            name: String(r[nameIdx] ?? '-'),
+                            value: toNumber(r[valueIdx]),
+                        })),
+                        label: { formatter: '{b}\n{d}%' },
+                    }],
+                };
+            }
+
+            // bar / line：X 轴优先日期列，其次类别列，最后退化为行号
+            let xIdx = kinds.findIndex(k => k === 'date');
+            if (xIdx < 0) xIdx = kinds.findIndex(k => k === 'category');
+            const xData = rows.map((r, i) => String(xIdx >= 0 ? r[xIdx] ?? '-' : i + 1));
+            const seriesIdx = numberIdx.filter(i => i !== xIdx);
+            if (!seriesIdx.length) return null;
+
+            return {
+                title: { text: title, left: 'center', textStyle: { fontSize: 14 } },
+                tooltip: { trigger: 'axis' },
+                legend: seriesIdx.length > 1
+                    ? { top: 26, data: seriesIdx.map(i => columns[i]) }
+                    : undefined,
+                grid: { left: 50, right: 30, top: seriesIdx.length > 1 ? 60 : 45, bottom: 40 },
+                xAxis: { type: 'category', data: xData, name: xIdx >= 0 ? columns[xIdx] : '' },
+                yAxis: { type: 'value' },
+                series: seriesIdx.map(i => ({
+                    name: columns[i],
+                    type: type === 'line' ? 'line' : 'bar',
+                    smooth: type === 'line',
+                    barMaxWidth: 40,
+                    data: rows.map(r => toNumber(r[i])),
+                })),
+            };
+        }
+
+        /* ====================== 页面渲染 ====================== */
+
+        function appendUserMessage(text) {
+            const div = document.createElement('div');
+            div.className = 'msg user';
+            div.innerHTML = '<div class="bubble">' + escapeHtml(text) + '</div>';
+            chatEl.appendChild(div);
+        }
+
+        function appendLoadingMessage() {
+            const div = document.createElement('div');
+            div.className = 'msg bot';
+            div.innerHTML =
+                '<div class="avatar">智</div>' +
+                '<div class="bubble"><div class="typing"><i></i><i></i><i></i></div> ' +
+                '正在查询数据库并分析结果，请稍候（通常 10~60 秒）…</div>';
+            chatEl.appendChild(div);
+            return div;
+        }
+
+        function buildDataTable(columns, rows, truncated) {
+            const maxRows = 100;
+            const shown = rows.slice(0, maxRows);
+            let html = '<div class="data-table-wrap"><table class="data-table"><thead><tr>';
+            columns.forEach(c => { html += '<th>' + escapeHtml(c) + '</th>'; });
+            html += '</tr></thead><tbody>';
+            shown.forEach(r => {
+                html += '<tr>';
+                columns.forEach((_, i) => { html += '<td>' + escapeHtml(r[i]) + '</td>'; });
+                html += '</tr>';
+            });
+            html += '</tbody></table></div>';
+            if (rows.length > maxRows) {
+                html += '<div class="input-tip">仅展示前 ' + maxRows + ' 行，共 ' + rows.length + ' 行。</div>';
+            } else if (truncated) {
+                html += '<div class="input-tip">查询结果过多，已截断。</div>';
+            }
+            return html;
+        }
+
+        function buildStepsHtml(steps) {
+            if (!steps || !steps.length) return '';
+            let html = '<ol class="steps-list">';
+            steps.forEach(s => {
+                const input = typeof s.input === 'object' ? JSON.stringify(s.input) : String(s.input ?? '');
+                html += '<li><span class="tool-name">' + escapeHtml(s.tool) + '</span>' +
+                    '<br>输入: ' + escapeHtml(input) +
+                    '<br>输出: ' + escapeHtml(s.output) + '</li>';
+            });
+            html += '</ol>';
+            return html;
+        }
+
+        /** 构建一条完整的机器人回复 DOM（回答 + 图表 + SQL + 数据 + 过程 + 反馈）。
+         *  实时渲染与历史回放共用；XSS 基线：所有动态内容均转义/净化。 */
+        function buildBotMessage(payload) {
+            const div = document.createElement('div');
+            div.className = 'msg bot';
+
+            let inner = '<div class="avatar">智</div><div class="bubble">';
+
+            if (!payload.ok && !payload.answer) {
+                inner += '<div class="answer-body" style="color:#b91c1c;">⚠ ' +
+                    escapeHtml(payload.error || '查询失败，请稍后重试。') + '</div>';
+                inner += '</div>';
+                div.innerHTML = inner;
+                return div;
+            }
+
+            // 1. 回答正文
+            inner += '<div class="answer-body">' + renderMarkdown(payload.answer || '(未给出回答)') + '</div>';
+
+            // 2. 图表区
+            const chart = payload.chart || {};
+            const data = payload.data || {};
+            if (chart.chartable && data.rows && data.rows.length) {
+                const chartId = 'chart-' + (++chartSeq);
+                inner += '<div class="chart-card">' +
+                    '<div class="chart-toolbar">' +
+                    '<span class="hint">' + escapeHtml(chart.reason || '') + '</span>' +
+                    '<button class="chart-btn" data-type="bar">柱状图</button>' +
+                    '<button class="chart-btn" data-type="line">折线图</button>' +
+                    '<button class="chart-btn" data-type="pie">饼图</button>' +
+                    '</div>' +
+                    '<div class="chart-box" id="' + chartId + '"></div>' +
+                    '</div>';
+            }
+
+            // 3. SQL
+            if (payload.sql) {
+                inner += '<details><summary>查看 SQL</summary>' +
+                    '<pre class="sql-block">' + escapeHtml(payload.sql) + '</pre></details>';
+            }
+
+            // 4. 数据表
+            if (data.columns && data.columns.length) {
+                inner += '<details><summary>查看数据（' + data.row_count + ' 行）</summary>' +
+                    buildDataTable(data.columns, data.rows, data.truncated) + '</details>';
+            }
+
+            // 5. 工具调用过程
+            if (payload.steps && payload.steps.length) {
+                inner += '<details><summary>查看执行过程</summary>' +
+                    buildStepsHtml(payload.steps) + '</details>';
+            }
+
+            // 6. 反馈按钮（P3-18）
+            inner += '<div class="feedback">' +
+                '<button class="feedback-btn" data-rating="up">👍 有用</button>' +
+                '<button class="feedback-btn" data-rating="down">👎 无用</button>' +
+                '</div>';
+
+            inner += '</div>';
+            div.innerHTML = inner;
+            attachFeedback(div, payload);
+
+            return div;
+        }
+
+        /** 初始化一条消息内的 ECharts 图表及类型切换按钮。
+         *  必须在消息 DOM 插入文档树后调用：在脱离文档的节点上 init，
+         *  容器尺寸为 0，图表会渲染成空白。 */
+        function initChart(div, payload) {
+            const chart = payload.chart || {};
+            const data = payload.data || {};
+            if (!chart.chartable || !data.rows || !data.rows.length) return;
+            const chartEl = div.querySelector('.chart-box');
+            if (!chartEl) return;
+            if (!window.echarts) {
+                chartEl.innerHTML = '<div class="input-tip">ECharts 图表库加载失败，请检查网络后刷新。</div>';
+                return;
+            }
+            const instance = echarts.init(chartEl);
+            let currentType = chart.chart_type || 'bar';
+
+            const render = () => {
+                const option = buildChartOption(currentType, payload.question, data, chart.column_kinds);
+                if (option) instance.setOption(option, true);
+                div.querySelectorAll('.chart-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.type === currentType);
+                });
+            };
+            div.querySelectorAll('.chart-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    currentType = btn.dataset.type;
+                    render();
+                });
+            });
+            window.addEventListener('resize', () => instance.resize());
+            render();
+        }
+
+        /** 渲染一条完整的机器人回复（实时提问场景） */
+        function renderBotMessage(loadingEl, payload) {
+            if (loadingEl) loadingEl.remove();
+            const div = buildBotMessage(payload);
+            chatEl.appendChild(div);
+            initChart(div, payload);  // 先插入文档再初始化，保证容器有尺寸
+            chatEl.scrollTop = chatEl.scrollHeight;
+        }
+
+        /** 回放完整消息列表（侧边栏会话切换/页面加载） */
+        function replayMessages(messages) {
+            chatEl.innerHTML = '';
+            if (!messages || !messages.length) {
+                chatEl.innerHTML = WELCOME_HTML;
+                return;
+            }
+            messages.forEach(msg => {
+                if (msg.role === 'human') {
+                    appendUserMessage(msg.content);
+                } else if (msg.payload) {
+                    const div = buildBotMessage(msg.payload);
+                    chatEl.appendChild(div);
+                    initChart(div, msg.payload);  // 先插入文档再初始化
+                }
+            });
+            chatEl.scrollTop = chatEl.scrollHeight;
+        }
+
+        /* ====================== 侧边栏折叠/展开 ====================== */
+
+        const sidebarToggle = document.getElementById('sidebar-toggle');
+
+        /** 切换侧边栏折叠状态。折叠类已由 head 内联脚本提前应用（防刷新闪烁），
+         *  这里负责同步按钮图标与提示文案。 */
+        function setSidebarCollapsed(collapsed) {
+            document.documentElement.classList.toggle('sidebar-collapsed', collapsed);
+            sidebarToggle.textContent = collapsed ? '»' : '«';
+            sidebarToggle.title = collapsed ? '展开侧边栏' : '收起侧边栏';
+            sidebarToggle.setAttribute('aria-label', sidebarToggle.title);
+            sidebarToggle.setAttribute('aria-expanded', String(!collapsed));
+        }
+
+        (function initSidebarCollapsed() {
+            let collapsed = false;
+            try { collapsed = localStorage.getItem('smartqa_sidebar_collapsed') === '1'; } catch (err) {}
+            setSidebarCollapsed(collapsed);
+        })();
+
+        sidebarToggle.addEventListener('click', () => {
+            const collapsed = !document.documentElement.classList.contains('sidebar-collapsed');
+            setSidebarCollapsed(collapsed);
+            try { localStorage.setItem('smartqa_sidebar_collapsed', collapsed ? '1' : '0'); } catch (err) {}
+            // 过渡结束后触发 resize 监听，让 ECharts 图表适配主区新宽度
+            setTimeout(() => window.dispatchEvent(new Event('resize')), 320);
+        });
+
+        /* ====================== 侧边栏（历史会话） ====================== */
+
+        function renderSessionList(sessions, currentId) {
+            const listEl = document.getElementById('session-list');
+            if (!sessions || !sessions.length) {
+                listEl.innerHTML = '<div class="session-empty">暂无历史对话<br>点击上方「新对话」开始提问</div>';
+                return;
+            }
+            listEl.innerHTML = '';
+            sessions.forEach(s => {
+                const item = document.createElement('div');
+                item.className = 'session-item' + (s.session_id === currentId ? ' active' : '');
+                item.innerHTML =
+                    '<button class="session-del" title="删除会话">×</button>' +
+                    '<div class="session-title">' + escapeHtml(s.title) + '</div>' +
+                    '<div class="session-meta">' + relativeTime(s.updated_at) + ' · ' +
+                    Math.max(1, Math.ceil(s.message_count / 2)) + ' 轮</div>';
+                item.addEventListener('click', () => activateSession(s.session_id));
+                item.querySelector('.session-del').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    deleteSession(s.session_id);
+                });
+                listEl.appendChild(item);
+            });
+        }
+
+        /** 拉取会话列表并渲染（含后端 cookie 中的当前活动会话 ID） */
+        async function refreshSessionList() {
+            try {
+                const resp = await apiFetch('/api/v1/sessions', { headers: apiHeaders() });
+                if (!resp.ok) return;
+                const payload = await resp.json();
+                if (payload.current_session_id) currentSessionId = payload.current_session_id;
+                renderSessionList(payload.sessions || [], currentSessionId);
+            } catch (err) {
+                // 后端不可用时保持现状，不打断页面
+            }
+        }
+
+        /** 从后端拉取当前会话完整消息并回放 */
+        async function refreshChatFromServer() {
+            if (!currentSessionId) { replayMessages([]); return; }
+            let messages = [];
+            try {
+                const resp = await apiFetch(
+                    '/api/v1/sessions/' + encodeURIComponent(currentSessionId) + '/messages',
+                    { headers: apiHeaders() }
+                );
+                if (resp.ok) {
+                    const payload = await resp.json();
+                    messages = payload.messages || [];
+                }
+            } catch (err) {
+                // 后端不可用时显示欢迎语
+            }
+            replayMessages(messages);
+        }
+
+        /** 切换活动会话：通知后端更新 cookie，再回放该会话消息 */
+        async function activateSession(id) {
+            if (pending) return;
+            if (id === currentSessionId) return;
+            try {
+                await apiFetch(
+                    '/api/v1/sessions/' + encodeURIComponent(id) + '/activate',
+                    { method: 'POST', headers: apiHeaders() }
+                );
+            } catch (err) {
+                // 后端不可用时仅本地切换
+            }
+            currentSessionId = id;
+            await refreshChatFromServer();
+            refreshSessionList();
+        }
+
+        /** 删除会话；删除的是当前会话时后端会顺带切换到新会话 */
+        async function deleteSession(id) {
+            if (pending) return;
+            if (!window.confirm('确定删除该对话？此操作不可恢复。')) return;
+            try {
+                const resp = await apiFetch(
+                    '/api/v1/sessions/' + encodeURIComponent(id),
+                    { method: 'DELETE', headers: apiHeaders() }
+                );
+                if (resp.ok) {
+                    const payload = await resp.json().catch(() => null);
+                    if (id === currentSessionId) {
+                        currentSessionId = (payload && payload.session_id) || null;
+                        chatEl.innerHTML = WELCOME_HTML;
+                    }
+                }
+            } catch (err) {
+                // 后端不可用时仅刷新本地列表
+            }
+            refreshSessionList();
+        }
+
+        /* ====================== API 调用辅助 ====================== */
+
+        /** 请求头：JSON + 可选 API 密钥（后端配置 WEB_API_KEYS 后启用，P3-19） */
+        function apiHeaders() {
+            const headers = { 'Content-Type': 'application/json' };
+            const apiKey = localStorage.getItem('smartqa_api_key');
+            if (apiKey) headers['X-API-Key'] = apiKey;
+            return headers;
+        }
+
+        /** 401 时引导输入 API 密钥；取消则返回 false */
+        function handleUnauthorized() {
+            const key = window.prompt('本服务已启用访问密钥，请输入 API Key：');
+            if (key && key.trim()) {
+                localStorage.setItem('smartqa_api_key', key.trim());
+                return true;
+            }
+            return false;
+        }
+
+        /** 统一 fetch 封装：401 时引导输入密钥并自动重试一次 */
+        async function apiFetch(url, options) {
+            let resp = await fetch(url, options);
+            if (resp.status === 401 && handleUnauthorized()) {
+                resp = await fetch(url, options);
+            }
+            return resp;
+        }
+
+        /** 提交回答评价到 /api/v1/feedback（静默失败，不阻塞界面） */
+        async function sendFeedback(payload, rating, button) {
+            try {
+                const resp = await apiFetch('/api/v1/feedback', {
+                    method: 'POST',
+                    headers: apiHeaders(),
+                    body: JSON.stringify({
+                        rating,
+                        question: payload.question,
+                        sql: payload.sql || null,
+                    }),
+                });
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const wrap = button.parentElement;
+                wrap.innerHTML = '<span class="feedback-done">感谢反馈！</span>';
+            } catch (err) {
+                button.disabled = false;
+                alert('反馈提交失败：' + err.message);
+            }
+        }
+
+        /** 给一条机器人回复挂载 👍/👎 事件（点一次后锁定） */
+        function attachFeedback(div, payload) {
+            if (!payload || !payload.ok) return;
+            div.querySelectorAll('.feedback-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    div.querySelectorAll('.feedback-btn').forEach(b => { b.disabled = true; });
+                    btn.classList.add('active');
+                    sendFeedback(payload, btn.dataset.rating, btn);
+                });
+            });
+        }
+
+        /* ====================== 提问流程（SSE 流式，P3-15） ====================== */
+
+        /** 创建流式进行中的机器人消息容器（实时步骤 + 状态行） */
+        function createStreamContainer() {
+            const div = document.createElement('div');
+            div.className = 'msg bot';
+            div.innerHTML =
+                '<div class="avatar">智</div>' +
+                '<div class="bubble">' +
+                '<div class="stream-steps"></div>' +
+                '<div class="stream-status">正在分析问题，准备查询数据库…</div>' +
+                '</div>';
+            chatEl.appendChild(div);
+            return div;
+        }
+
+        /** 处理一条 SSE 事件：步骤实时上屏；result/error 返回给主流程 */
+        function handleStreamEvent(event, container) {
+            if (event.type === 'step_start') {
+                const stepsEl = container.querySelector('.stream-steps');
+                const row = document.createElement('div');
+                row.className = 'stream-step';
+                row.textContent = '🔧 正在调用 ' + event.tool + ' …';
+                stepsEl.appendChild(row);
+                container.querySelector('.stream-status').textContent = '正在执行 ' + event.tool + ' …';
+                return null;
+            }
+            if (event.type === 'step_done') {
+                const stepsEl = container.querySelector('.stream-steps');
+                const row = stepsEl.lastElementChild;
+                if (row) row.textContent = '✅ ' + event.tool + ' 完成';
+                return null;
+            }
+            return event;  // result / error 交由主流程渲染
+        }
+
+        /** 逐块读取 SSE 响应体，按 ``data: <json>\n\n`` 切分事件 */
+        async function consumeSSE(resp, container) {
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+            let finalEvent = null;
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                let idx;
+                while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                    const chunk = buffer.slice(0, idx).trim();
+                    buffer = buffer.slice(idx + 2);
+                    if (!chunk.startsWith('data:')) continue;
+                    const event = JSON.parse(chunk.slice(5));
+                    const finished = handleStreamEvent(event, container);
+                    if (finished) finalEvent = finished;
+                }
+            }
+            return finalEvent;
+        }
+
+        async function askQuestion() {
+            if (pending) return;
+            const question = inputEl.value.trim();
+            if (!question) return;
+
+            pending = true;
+            askBtn.disabled = true;
+            inputEl.value = '';
+            appendUserMessage(question);
+            const container = createStreamContainer();
+            chatEl.scrollTop = chatEl.scrollHeight;
+
+            try {
+                const resp = await apiFetch('/api/v1/ask_stream', {
+                    method: 'POST',
+                    headers: apiHeaders(),
+                    body: JSON.stringify({ question }),
+                });
+
+                const contentType = resp.headers.get('Content-Type') || '';
+                if (contentType.includes('text/event-stream')) {
+                    const event = await consumeSSE(resp, container);
+                    container.remove();
+                    if (event && event.type === 'result') {
+                        renderBotMessage(null, event.payload);
+                        refreshSessionList();  // 更新侧边栏标题/排序
+                    } else {
+                        renderBotMessage(null, {
+                            ok: false,
+                            error: (event && event.error) || '连接中断，请重试。',
+                        });
+                    }
+                } else {
+                    // 非流式响应：参数校验/限流/认证等错误（普通 JSON）
+                    const payload = await resp.json().catch(() => null);
+                    container.remove();
+                    renderBotMessage(null, {
+                        ok: false,
+                        error: (payload && payload.error) || ('请求失败（HTTP ' + resp.status + '）'),
+                    });
+                }
+            } catch (err) {
+                container.remove();
+                renderBotMessage(null, {
+                    ok: false,
+                    error: '请求失败：' + err.message + '（请确认后端服务已启动）',
+                });
+            } finally {
+                pending = false;
+                askBtn.disabled = false;
+                inputEl.focus();
+                chatEl.scrollTop = chatEl.scrollHeight;
+            }
+        }
+
+        askBtn.addEventListener('click', askQuestion);
+        inputEl.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                askQuestion();
+            }
+        });
+
+        /** 新对话：后端创建全新会话（cookie 切换），前端清空聊天区 */
+        newChatBtn.addEventListener('click', async () => {
+            if (pending) return;
+            try {
+                const resp = await apiFetch('/api/v1/new_chat', { method: 'POST', headers: apiHeaders() });
+                if (resp.ok) {
+                    const payload = await resp.json().catch(() => null);
+                    currentSessionId = (payload && payload.session_id) || null;
+                }
+            } catch (err) {
+                // 后端不可用时仅重置界面
+                currentSessionId = null;
+            }
+            chatEl.innerHTML = WELCOME_HTML;
+            refreshSessionList();
+            inputEl.focus();
+        });
+
+        /* ====================== 页面初始化 ====================== */
+
+        (async function init() {
+            // 先取会话列表（含当前活动会话 ID），再回放当前会话历史
+            await refreshSessionList();
+            await refreshChatFromServer();
+        })();
+
+        inputEl.focus();
+    </script>
+</body>
+</html>

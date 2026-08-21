@@ -1,0 +1,10 @@
+# 智慧问数 RAG 语料库（few-shot 示例）
+# 每行一个 JSON 对象：{"question": "...", "sql": "...", "notes": "可选要点"}
+# 要求：sql 必须是经过人工核对、真实可执行的 SQL；示例会在提问时按
+# 相似度检索 Top-3 注入提示词。以 # 开头的行会被忽略。
+# 当前库：ecommerce_db（users / orders / products），SQL 已实测可执行。
+{"question": "最近7天新增了多少用户？", "sql": "SELECT COUNT(*) AS new_user_count FROM users WHERE register_time >= DATE_SUB(NOW(), INTERVAL 7 DAY)", "notes": "users 表用 register_time 记录注册时间"}
+{"question": "各类别商品的数量分别是多少？", "sql": "SELECT category, COUNT(*) AS cnt FROM products GROUP BY category ORDER BY cnt DESC", "notes": "占比类问题保持类别+计数两列，前端会自动推荐饼图"}
+{"question": "哪个城市的用户最多？", "sql": "SELECT city, COUNT(*) AS user_count FROM users GROUP BY city ORDER BY user_count DESC LIMIT 1", "notes": "Top-N 问题记得加 LIMIT"}
+{"question": "订单的总金额是多少？", "sql": "SELECT SUM(amount) AS total_amount FROM orders", "notes": "orders.amount 记录单笔订单金额"}
+{"question": "每个用户分别下了多少订单？", "sql": "SELECT u.name, COUNT(o.id) AS order_count FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.id, u.name ORDER BY order_count DESC", "notes": "用户与订单通过 orders.user_id 关联"}

@@ -1,0 +1,16 @@
+# 凭据与本地配置，严禁提交
+.env
+
+# 用户反馈数据（含提问内容，属用户数据）
+feedback.jsonl
+
+# Python 缓存与产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
