@@ -287,6 +287,35 @@ class SQLExecuteTool(BaseTool):
         }
         return json.dumps(response, ensure_ascii=False, default=str)
 
+class ColumnAliasesTool(BaseTool):
+    """上报查询结果列的中文展示别名（仅用于前端渲染，不影响 SQL）。"""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    name: str = "report_column_aliases"
+    description: str = (
+        "为最近一次成功查询的结果列上报中文展示别名，前端图表图例/坐标轴/"
+        "表格列头将优先展示这些别名。aliases 为「结果列名 → 简短中文名」映射，"
+        "需覆盖全部结果列；中文名不超过 12 字，应结合用户问题意图、字段备注与"
+        "聚合语义命名（如 total_sales→总销售额；问销售额时用 pay_amount 合计"
+        "可命名为销售额）。"
+    )
+
+    def __init__(self) -> None:
+        alias_args = create_model(
+            "ColumnAliasesToolArgs",
+            aliases=(
+                dict[str, str],
+                Field(..., description="结果列名到中文展示名的映射"),
+            ),
+        )
+        super().__init__(args_schema=alias_args)
+
+    def _run(self, aliases: dict[str, str]) -> str:
+        """记录列别名建议（实际消费在结果组装层从工具输入中提取）。"""
+        return f"已记录 {len(aliases or {})} 个列的中文展示名，将用于前端图表与表格渲染。"
+
+
 class SQLCheckTool(BaseTool):
     """校验 MySQL SELECT 查询的语法及数据库对象引用。"""
 

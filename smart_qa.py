@@ -1,8 +1,8 @@
 """智慧问数：基于 LangGraph 的自然语言数据库问答模块。
 
 用户用自然语言提问，由大模型 Agent 调用数据库工具完成
-"列表 → 取 schema → 写 SQL → 校验 → 执行 → 总结" 的完整链路，
-最终返回中文答案、所使用的 SQL 以及中间工具调用过程。
+"列表 → 取 schema → 写 SQL → 校验 → 执行 → 列别名上报 → 总结" 的完整链路，
+最终返回中文答案、所使用的 SQL、列中文别名建议以及中间工具调用过程。
 
 基于 LangChain 1.x / LangGraph 1.x 的 ``create_react_agent`` 实现。
 
@@ -64,6 +64,7 @@ from langchain_core.messages import (  # noqa: E402
 from langchain_openai import ChatOpenAI  # noqa: E402
 
 from agent_tools import (  # noqa: E402
+    ColumnAliasesTool,
     SQLCheckTool,
     SQLExecuteTool,
     TablesListTool,
@@ -108,7 +109,8 @@ DEFAULT_SYSTEM_PROMPT = """你是一位资深的数据分析助手"智慧问数"
 3. 基于 schema 编写一条只读 SELECT 查询（MySQL 方言），**只能使用 schema 中真实存在的字段**，先调用 `sql_db_checker` 校验语法与表/字段引用是否正确；
 4. 校验通过后再调用 `sql_db_execute` 执行查询；如果校验或执行失败，请仔细阅读错误信息、修正 SQL 后重试，最多重试 3 次；若失败原因是字段/表不存在，**绝不能虚构字段重试**，应如实告知用户；
 5. **数据库不可用快速失败**：若任何工具返回的错误文本含 "Can't connect"、"timed out"、"超时"、"连接" 等连接失败信息，说明数据库服务当前不可达，**禁止重试任何数据库工具**（重试只会重复等待连接超时），立即用中文如实告知用户"数据库连接异常，请检查网络或联系管理员"，并附上错误摘要；
-6. 结合查询结果，用中文给出最终回答。
+6. 查询执行成功后，调用 `report_column_aliases` 为结果中的**每一列**上报简短的中文展示名（不超过 12 字）：结合用户问题意图、字段备注与聚合语义命名（如统计销售额时 pay_amount 的合计可命名为"销售额"）；该映射仅用于前端图表与表格展示，不影响 SQL 与回答内容；
+7. 结合查询结果，用中文给出最终回答。
 
 编写 SQL 时的注意事项：
 - 只允许 SELECT 查询，严禁 INSERT/UPDATE/DELETE/DDL/加锁/写文件等任何写操作；
@@ -157,7 +159,7 @@ class SmartQA:
     """智慧问数 Agent。
 
     通过自然语言向 MySQL 数据库提问，Agent 会自主调用
-    列表 / schema / 校验 / 执行 四个工具完成数据查询并给出中文答案。
+    列表 / schema / 校验 / 执行 / 列别名上报 五个工具完成数据查询并给出中文答案。
 
     Example:
         >>> qa = SmartQA(db_config, llm_config)
@@ -222,6 +224,7 @@ class SmartQA:
             TablesSchemaTool(db_manager=self.database),
             SQLCheckTool(db_manager=self.database),
             SQLExecuteTool(db_manager=self.database),
+            ColumnAliasesTool(),
         ]
 
     def _build_agent(self) -> Any:
@@ -250,6 +253,8 @@ class SmartQA:
             - answer:   Agent 的最终中文回答
             - sql:      从工具调用中提取的最后一条 SQL（可能为 None）
             - data:     最后一次成功执行的查询结果，含 columns/rows 等（可能为 None）
+            - suggested_column_aliases: Agent 经 report_column_aliases 上报的
+                        列中文展示名建议（可能为空映射），由 Web 层与配置别名合并
             - intermediate_steps: 工具调用过程列表，每项含 tool / input / output
             - rejected: 是否因命中敏感隐私问题被拒绝（拒绝时不会调用 Agent）
             - error:    保留字段，成功时恒为 None；Agent 整体失败时改为
@@ -293,6 +298,7 @@ class SmartQA:
             "answer": self._extract_final_answer(messages_out),
             "sql": self._extract_sql(intermediate_steps),
             "data": self._extract_data(intermediate_steps),
+            "suggested_column_aliases": self._extract_column_aliases(intermediate_steps),
             "intermediate_steps": intermediate_steps,
             "rejected": False,
             "error": None,
@@ -370,6 +376,7 @@ class SmartQA:
                 "answer": self._extract_final_answer(collected),
                 "sql": self._extract_sql(intermediate_steps),
                 "data": self._extract_data(intermediate_steps),
+                "suggested_column_aliases": self._extract_column_aliases(intermediate_steps),
                 "intermediate_steps": intermediate_steps,
                 "rejected": False,
                 "error": None,
@@ -520,6 +527,28 @@ class SmartQA:
             if isinstance(parsed, dict) and "columns" in parsed and "rows" in parsed:
                 data = parsed
         return data
+
+    @staticmethod
+    def _extract_column_aliases(steps: list[dict[str, Any]]) -> dict[str, str]:
+        """提取 Agent 最后一次 report_column_aliases 上报的列别名建议。
+
+        工具输入可能为 dict 或 JSON 字符串；解析失败/结构不符时跳过，
+        最终由配置层别名兜底，不影响主流程。
+        """
+        suggested: dict[str, str] = {}
+        for step in steps:
+            if step["tool"] != "report_column_aliases":
+                continue
+            payload = step["input"]
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+            candidate = payload.get("aliases") if isinstance(payload, dict) else None
+            if isinstance(candidate, dict):
+                suggested = {str(key): str(value) for key, value in candidate.items()}
+        return suggested
 
     @staticmethod
     def _query_from_input(tool_input: Any) -> str | None:

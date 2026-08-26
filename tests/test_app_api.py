@@ -293,6 +293,38 @@ def test_build_ask_payload_includes_column_aliases():
     assert payload["chart"]["chart_type"] == "bar"
 
 
+def test_build_ask_payload_prefers_agent_aliases():
+    # Agent 结合问题意图上报的别名优先于配置兜底
+    result = {
+        "answer": "销售额 100 元。",
+        "sql": "SELECT SUM(pay_amount) AS total_sales FROM orders",
+        "data": {
+            "columns": ["total_sales"],
+            "rows": [[100]],
+            "row_count": 1,
+            "truncated": False,
+        },
+        "suggested_column_aliases": {"total_sales": "销售额"},
+        "intermediate_steps": [],
+    }
+    payload = app._build_ask_payload("分析一下销售额", result)
+    assert payload["data"]["column_aliases"]["total_sales"] == "销售额"
+
+
+def test_extract_column_aliases_from_steps():
+    # 取最后一次上报；兼容 dict 与 JSON 字符串两种工具输入形态
+    from smart_qa import SmartQA
+
+    steps = [
+        {"tool": "sql_db_execute", "input": {"query": "SELECT 1"}, "output": "{}"},
+        {"tool": "report_column_aliases", "input": {"aliases": {"a": "甲"}}, "output": "ok"},
+        {"tool": "report_column_aliases", "input": json.dumps({"aliases": {"b": "乙"}}), "output": "ok"},
+        {"tool": "report_column_aliases", "input": "not-json", "output": "ok"},
+    ]
+    assert SmartQA._extract_column_aliases(steps) == {"b": "乙"}
+    assert SmartQA._extract_column_aliases([]) == {}
+
+
 if __name__ == "__main__":
     import sys
 

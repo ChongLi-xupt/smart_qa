@@ -59,7 +59,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from chart_builder import recommend_chart
 from chat_store import create_history_store
-from column_aliases import resolve_column_aliases
+from column_aliases import merge_column_aliases
 from qa_exceptions import ParameterError, SmartQAError
 from smart_qa import SmartQA, _config_from_env
 
@@ -524,8 +524,9 @@ def _finalize_result(session_id: str, question: str, result: dict[str, Any]) -> 
 def _build_ask_payload(question: str, result: dict[str, Any]) -> dict[str, Any]:
     """组装 /ask 与 /ask_stream 共用的最终响应体（数据 + 图表 + 精简步骤）。
 
-    data.column_aliases 为列名中文别名表（config/column_aliases.yaml 配置），
-    前端图表图例/坐标轴/表头优先渲染别名，无别名时回退原始列名。
+    data.column_aliases 为列名中文别名表：Agent 上报建议优先、
+    config/column_aliases.yaml 配置兜底；前端图表图例/坐标轴/表头
+    优先渲染别名，无别名时回退原始列名。
     """
     data = result.get("data") or {}
     columns = data.get("columns") or []
@@ -538,7 +539,9 @@ def _build_ask_payload(question: str, result: dict[str, Any]) -> dict[str, Any]:
         "error": None,
         "data": {
             "columns": columns,
-            "column_aliases": resolve_column_aliases(columns),
+            "column_aliases": merge_column_aliases(
+                columns, result.get("suggested_column_aliases")
+            ),
             "rows": rows,
             "row_count": data.get("row_count", len(rows)),
             "truncated": data.get("truncated", False),

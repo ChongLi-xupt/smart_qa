@@ -393,6 +393,16 @@
 
         /* ====================== 工具函数 ====================== */
 
+        /** 工具名中文标签：流式步骤/过程面板展示中文，避免界面出现英文工具名 */
+        const TOOL_LABELS = {
+            sql_db_list_tables: '拉取表列表',
+            sql_db_schema: '获取表结构',
+            sql_db_checker: 'SQL 校验',
+            sql_db_execute: 'SQL 执行',
+            report_column_aliases: '生成列中文名',
+        };
+        function toolLabel(name) { return TOOL_LABELS[name] || name; }
+
         function escapeHtml(text) {
             return String(text ?? '')
                 .replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -580,7 +590,7 @@
             let html = '<ol class="steps-list">';
             steps.forEach(s => {
                 const input = typeof s.input === 'object' ? JSON.stringify(s.input) : String(s.input ?? '');
-                html += '<li><span class="tool-name">' + escapeHtml(s.tool) + '</span>' +
+                html += '<li><span class="tool-name">' + escapeHtml(toolLabel(s.tool)) + '</span>' +
                     '<br>输入: ' + escapeHtml(input) +
                     '<br>输出: ' + escapeHtml(s.output) + '</li>';
             });
@@ -924,15 +934,15 @@
                 const stepsEl = container.querySelector('.stream-steps');
                 const row = document.createElement('div');
                 row.className = 'stream-step';
-                row.textContent = '🔧 正在调用 ' + event.tool + ' …';
+                row.textContent = '🔧 正在调用 ' + toolLabel(event.tool) + ' …';
                 stepsEl.appendChild(row);
-                container.querySelector('.stream-status').textContent = '正在执行 ' + event.tool + ' …';
+                container.querySelector('.stream-status').textContent = '正在执行 ' + toolLabel(event.tool) + ' …';
                 return null;
             }
             if (event.type === 'step_done') {
                 const stepsEl = container.querySelector('.stream-steps');
                 const row = stepsEl.lastElementChild;
-                if (row) row.textContent = '✅ ' + event.tool + ' 完成';
+                if (row) row.textContent = '✅ ' + toolLabel(event.tool) + ' 完成';
                 return null;
             }
             return event;  // result / error 交由主流程渲染

@@ -10,9 +10,11 @@
 配置文件缺失或个别行损坏时自动降级（空映射 / 跳过该行），不影响现有
 行为；配置修改后按文件 mtime 自动热加载，无需重启服务。
 
-结果组装层（``app._build_ask_payload``）把别名表注入 ``data.column_aliases``，
-前端图表图例 / 坐标轴 / 系列名与数据表格列头优先渲染别名，无别名时
-回退原始列名（兼容不含该字段的历史会话 payload）。
+结果组装层（``app._build_ask_payload``）调用 ``merge_column_aliases`` 合并
+两层别名：Agent 经 ``report_column_aliases`` 工具上报的建议优先（结合问题
+意图，最贴合场景），配置别名为确定性兜底；合并结果注入
+``data.column_aliases``，前端图表图例 / 坐标轴 / 系列名与数据表格列头
+优先渲染别名，无别名时回退原始列名（兼容不含该字段的历史会话 payload）。
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import logging
 import re
 import threading
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("smart_qa.column_aliases")
 
@@ -127,3 +130,43 @@ def resolve_column_aliases(
         if alias and alias != name:
             aliases[name] = alias
     return aliases
+
+
+# Agent 上报别名的单值长度上限：过长会挤占图表图例/表头布局
+_MAX_ALIAS_LENGTH = 12
+
+
+def _clean_alias(value: Any) -> str | None:
+    """校验单个别名值：非空字符串、长度受限、不含换行；不合法返回 None。"""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > _MAX_ALIAS_LENGTH or "\n" in text:
+        return None
+    return text
+
+
+def merge_column_aliases(
+    columns: list[str],
+    suggested: dict[str, str] | None = None,
+    config_path: Path | None = None,
+) -> dict[str, str]:
+    """合并列别名：Agent 建议优先 → 配置别名兜底 → 不产生条目（回退原始列名）。
+
+    Agent（report_column_aliases 工具）结合问题意图给出的展示名最贴合场景
+    （如问销售额时 pay_amount 合计命名为"销售额"），但可能遗漏或越界，
+    故以配置文件为确定性兜底；两者都未命中的列不产生条目。
+    """
+    merged = resolve_column_aliases(columns, config_path)
+    if not suggested:
+        return merged
+    suggested_lower = {str(key).lower(): value for key, value in suggested.items()}
+    for column in columns:
+        name = str(column)
+        raw = suggested.get(name)
+        if raw is None:
+            raw = suggested_lower.get(name.lower())
+        alias = _clean_alias(raw)
+        if alias and alias != name:
+            merged[name] = alias
+    return merged

@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from column_aliases import resolve_column_aliases  # noqa: E402
+from column_aliases import merge_column_aliases, resolve_column_aliases  # noqa: E402
 
 _CONFIG_TEMPLATE = """\
 # 测试用配置（# 开头为注释）
@@ -127,6 +127,47 @@ def test_config_hot_reload():
         # 推进 mtime 触发缓存失效（同一时刻写入时 mtime 可能相同）
         os.utime(cfg, (os.path.getatime(cfg), os.path.getmtime(cfg) + 5))
         assert resolve_column_aliases(["a"], cfg) == {"a": "乙"}
+
+
+# ------------------------------ Agent 建议合并 ------------------------------ #
+
+
+def test_merge_agent_priority_over_config():
+    # Agent 结合问题意图的命名优先于配置（如问销售额时 pay_amount→销售额）
+    merged = merge_column_aliases(
+        ["total_sales", "pay_amount"],
+        {"pay_amount": "销售额"},
+    )
+    assert merged["pay_amount"] == "销售额"
+    # 未上报的列仍由配置兜底
+    assert merged["total_sales"] == "总销售额"
+
+
+def test_merge_config_fallback_without_suggested():
+    merged = merge_column_aliases(["total_sales"], None)
+    assert merged == {"total_sales": "总销售额"}
+
+
+def test_merge_invalid_suggested_filtered():
+    # 超长/空值/非字符串/不在结果列中的建议一律过滤，回退配置
+    merged = merge_column_aliases(
+        ["total_sales", "order_count", "weird_col"],
+        {
+            "total_sales": "这是一个超过十二字的别名啊啊啊啊",
+            "order_count": "   ",
+            "weird_col": 123,
+            "not_in_result": "杂项",
+        },
+    )
+    assert merged["total_sales"] == "总销售额"
+    assert merged["order_count"] == "订单总数"
+    assert "weird_col" not in merged
+    assert "not_in_result" not in merged
+
+
+def test_merge_suggested_case_insensitive_key():
+    merged = merge_column_aliases(["total_sales"], {"TOTAL_SALES": "销售额"})
+    assert merged["total_sales"] == "销售额"
 
 
 if __name__ == "__main__":

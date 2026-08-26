@@ -26,6 +26,8 @@ exact:
   user_id: 用户编号
   product_id: 商品编号
   "COUNT(*)": 记录数
+  total_spend: 总支出
+  avg_spend_per_user: 平均每人支出
 
 # ---- 分词词典：exact 未命中的 snake_case 列名逐词翻译合成别名 ----
 tokens:

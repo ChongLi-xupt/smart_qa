@@ -16,7 +16,7 @@
   - few-shot 检索：从 `rag/examples.jsonl` 自动检索 Top-3 相似示例注入提示词，提升 SQL 生成准确率
   - 业务术语表：`rag/glossary.md` 中的「术语: 定义」启动时注入系统提示词，统一口径（如"活跃用户"的具体定义）
 - **反馈闭环**：回答下方 👍/👎 评价沉淀到 `feedback.jsonl`，点赞样本经人工核对后可回流为 few-shot 语料
-- **列中文别名**：`config/column_aliases.yaml` 配置化映射（精确别名 + snake_case 分词合成），图表图例/坐标轴/数据表头优先渲染中文别名，无别名时回退原始字段名
+- **列中文别名**：Agent 查询成功后经 `report_column_aliases` 工具结合问题意图自动上报列中文展示名，`config/column_aliases.yaml`（精确别名 + snake_case 分词合成）作确定性兜底；图表图例/坐标轴/数据表头优先渲染中文别名，无别名时回退原始字段名
 - **API Key 认证**：`WEB_API_KEYS` 设置后 `/api/v1/*` 需携带 `X-API-Key`（常量时间比较），留空则本地开发完全开放
 - **五层安全防护**：
   1. 问题级敏感关键词拦截（密码/身份证/手机号等）
@@ -55,11 +55,12 @@ flowchart LR
         RAG_[rag.py<br/>few-shot Top-3 检索<br/>+ 业务术语表]
         AGENT[create_agent<br/>LangGraph ReAct 循环]
     end
-    subgraph 工具层[agent_tools.py · 4 个工具]
+    subgraph 工具层[agent_tools.py · 5 个工具]
         T1[list_tables]
         T2[schema]
         T3[checker · EXPLAIN]
         T4[execute]
+        T5[report_column_aliases<br/>列中文名上报]
     end
     GUARD[sql_guard.py<br/>AST 校验/敏感字段/防幻觉/LIMIT]
     CACHE[schema_cache.py<br/>元数据 TTL 缓存]
@@ -78,6 +79,7 @@ flowchart LR
     SENS -.前置拦截.-> AGENT
     AGENT <--> LLM
     AGENT --> T1 & T2 & T3 & T4
+    AGENT --> T5
     T1 & T2 & T3 & T4 --> GUARD --> DB
     T2 & T3 --> CACHE
     API1 & API2 --> CHART --> UI
@@ -127,7 +129,7 @@ flowchart TB
 ├── app.py                  # FastAPI Web 服务（路由、限流、SSE、认证、错误处理、会话 API）
 ├── smart_qa.py             # SmartQA Agent 封装（LangChain create_agent + 流式生成器）
 ├── database.py             # MySQL 连接与元数据读取（SQLAlchemy，只读入口）
-├── agent_tools.py          # 供 Agent 调用的 4 个 LangChain 工具（薄封装）
+├── agent_tools.py          # 供 Agent 调用的 5 个 LangChain 工具（薄封装，含列别名上报）
 ├── sql_guard.py            # SQL 安全护栏唯一入口（AST 校验/敏感字段/防幻觉/LIMIT）
 ├── schema_cache.py         # schema 元数据 TTL 缓存
 ├── chat_store.py           # 会话历史存储（内存 / Redis 双后端，含会话列表与完整回放）
