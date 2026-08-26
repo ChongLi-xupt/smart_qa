@@ -46,5 +46,6 @@ files = [
     "qa_exceptions.py",
     "schema_cache.py",
     "chat_store.py",
+    "column_aliases.py",
     "app.py",
 ]

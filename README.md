@@ -4,6 +4,8 @@
 
 技术栈：FastAPI + MySQL（只读账号）+ DeepSeek/OpenAI 兼容大模型 + LangChain 1.x + ECharts。
 
+服务运行时浏览器打开 http://127.0.0.1:5000/docs —— FastAPI 自动生成的交互式文档,每个接口都有参数说明,点 "Try it out" 直接填参数发送,无需写任何代码。
+
 ## 功能特性
 
 - **自然语言问数**：`"上个月各部门的销售额是多少？"` → SQL → 数据表 → 图表建议
@@ -14,6 +16,7 @@
   - few-shot 检索：从 `rag/examples.jsonl` 自动检索 Top-3 相似示例注入提示词，提升 SQL 生成准确率
   - 业务术语表：`rag/glossary.md` 中的「术语: 定义」启动时注入系统提示词，统一口径（如"活跃用户"的具体定义）
 - **反馈闭环**：回答下方 👍/👎 评价沉淀到 `feedback.jsonl`，点赞样本经人工核对后可回流为 few-shot 语料
+- **列中文别名**：`config/column_aliases.yaml` 配置化映射（精确别名 + snake_case 分词合成），图表图例/坐标轴/数据表头优先渲染中文别名，无别名时回退原始字段名
 - **API Key 认证**：`WEB_API_KEYS` 设置后 `/api/v1/*` 需携带 `X-API-Key`（常量时间比较），留空则本地开发完全开放
 - **五层安全防护**：
   1. 问题级敏感关键词拦截（密码/身份证/手机号等）
@@ -131,6 +134,8 @@ flowchart TB
 ├── rag.py                  # RAG 检索：few-shot 示例召回 + 术语表加载（零依赖）
 ├── rag/                    # examples.jsonl 示例语料 + glossary.md 业务术语表
 ├── chart_builder.py        # 图表类型推荐与列类型推断（返回 column_kinds）
+├── column_aliases.py       # 列中文别名映射（配置化解析，mtime 热加载）
+├── config/column_aliases.yaml # 列别名配置（exact 精确 + tokens 分词词典）
 ├── qa_exceptions.py        # 分层异常体系（配置/参数/LLM/数据库）
 ├── eval_golden.py          # 黄金问题评测脚本（无凭据时自动跳过）
 ├── templates/index.html    # 前端单页（流式 UI + 历史会话侧边栏 + ECharts）

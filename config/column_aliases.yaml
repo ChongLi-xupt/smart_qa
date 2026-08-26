@@ -1,0 +1,84 @@
+# =====================================================================
+# 查询结果列中文别名配置（column_aliases）
+# ---------------------------------------------------------------------
+# 由 column_aliases.py 解析（零依赖 YAML 子集解析器：仅识别顶层
+# 「小节:」与缩进的「键: 值」行，# 开头为注释；值可用引号包裹）。
+# 修改后按文件 mtime 自动热加载，无需重启服务。
+#
+# 解析优先级（详见 column_aliases.resolve_column_aliases）：
+#   1. exact   精确别名：列名完全一致即命中（大小写不敏感）；
+#   2. tokens  分词合成：snake_case 列名按 _ 分词逐词翻译拼接
+#              （需全部词命中才合成，否则不合成）；
+#   3. fallback 回退原始列名（不产生别名条目，前端原样显示）。
+#
+# 前端图表图例 / 系列名 / X 轴名与数据表格列头优先使用别名，
+# 保证界面上不再出现英文字段名；无别名时兼容回退原始列名。
+# =====================================================================
+
+# ---- 精确别名：列名完全匹配时优先生效（特殊口径/合成结果不佳时在此定制） ----
+exact:
+  total_sales: 总销售额
+  order_count: 订单总数
+  avg_order_value: 客单价
+  pay_amount: 实付金额
+  register_time: 注册时间
+  order_id: 订单编号
+  user_id: 用户编号
+  product_id: 商品编号
+  "COUNT(*)": 记录数
+
+# ---- 分词词典：exact 未命中的 snake_case 列名逐词翻译合成别名 ----
+tokens:
+  # 聚合 / 度量
+  total: 总
+  sum: 合计
+  avg: 平均
+  max: 最高
+  min: 最低
+  count: 数
+  cnt: 数
+  num: 数量
+  amount: 金额
+  price: 价格
+  cost: 成本
+  profit: 利润
+  sales: 销售额
+  revenue: 营收
+  quantity: 数量
+  qty: 数量
+  ratio: 占比
+  rate: 率
+  # 实体 / 维度
+  order: 订单
+  orders: 订单
+  user: 用户
+  users: 用户
+  product: 商品
+  products: 商品
+  category: 类别
+  department: 部门
+  dept: 部门
+  city: 城市
+  region: 地区
+  channel: 渠道
+  customer: 客户
+  member: 会员
+  status: 状态
+  name: 名称
+  id: 编号
+  # 时间
+  date: 日期
+  day: 日
+  month: 月份
+  year: 年份
+  week: 周
+  time: 时间
+  daily: 每日
+  monthly: 每月
+  yearly: 每年
+  # 修饰词
+  new: 新增
+  active: 活跃
+  paid: 实付
+  pay: 支付
+  registered: 注册

@@ -267,6 +267,32 @@ def test_sessions_reject_invalid_session_id():
     assert response.status_code == 400
 
 
+# ------------------------------ 列中文别名注入 ------------------------------ #
+
+
+def test_build_ask_payload_includes_column_aliases():
+    # 结果组装层应为英文列名注入中文别名，供前端图表/表头优先渲染
+    result = {
+        "answer": "总销售额 100 元。",
+        "sql": "SELECT SUM(pay_amount) AS total_sales FROM orders",
+        "data": {
+            "columns": ["total_sales", "mystery_col"],
+            "rows": [[100]],
+            "row_count": 1,
+            "truncated": False,
+        },
+        "intermediate_steps": [],
+    }
+    payload = app._build_ask_payload("销售额是多少？", result)
+    aliases = payload["data"]["column_aliases"]
+    assert aliases.get("total_sales") == "总销售额"
+    # 无别名列不产生条目，前端回退原始列名（向后兼容）
+    assert "mystery_col" not in aliases
+    # 原有字段结构保持不变
+    assert payload["data"]["columns"] == ["total_sales", "mystery_col"]
+    assert payload["chart"]["chart_type"] == "bar"
+
+
 if __name__ == "__main__":
     import sys
 

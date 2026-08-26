@@ -439,6 +439,14 @@
             });
         }
 
+        /** 列展示名：优先后端注入的中文别名（data.column_aliases），
+         *  缺失时回退原始列名（兼容不含别名字段的历史会话 payload）。 */
+        function displayNames(data) {
+            const columns = data.columns || [];
+            const aliases = data.column_aliases || {};
+            return columns.map(c => aliases[c] || c);
+        }
+
         function relativeTime(iso) {
             if (!iso) return '';
             const diff = Date.now() - new Date(iso).getTime();
@@ -466,6 +474,8 @@
             const kinds = (Array.isArray(kindsOverride) && kindsOverride.length === columns.length)
                 ? kindsOverride
                 : classifyColumns(columns, rows);
+            // 图例/系列名/X 轴名一律优先中文别名，避免界面出现英文字段名
+            const names = displayNames(data);
             const numberIdx = kinds
                 .map((k, i) => (k === 'number' ? i : -1))
                 .filter(i => i >= 0);
@@ -506,13 +516,13 @@
                 title: { text: title, left: 'center', textStyle: { fontSize: 14 } },
                 tooltip: { trigger: 'axis' },
                 legend: seriesIdx.length > 1
-                    ? { top: 26, data: seriesIdx.map(i => columns[i]) }
+                    ? { top: 26, data: seriesIdx.map(i => names[i]) }
                     : undefined,
                 grid: { left: 50, right: 30, top: seriesIdx.length > 1 ? 60 : 45, bottom: 40 },
-                xAxis: { type: 'category', data: xData, name: xIdx >= 0 ? columns[xIdx] : '' },
+                xAxis: { type: 'category', data: xData, name: xIdx >= 0 ? names[xIdx] : '' },
                 yAxis: { type: 'value' },
                 series: seriesIdx.map(i => ({
-                    name: columns[i],
+                    name: names[i],
                     type: type === 'line' ? 'line' : 'bar',
                     smooth: type === 'line',
                     barMaxWidth: 40,
@@ -541,11 +551,15 @@
             return div;
         }
 
-        function buildDataTable(columns, rows, truncated) {
+        function buildDataTable(columns, rows, truncated, names) {
             const maxRows = 100;
             const shown = rows.slice(0, maxRows);
             let html = '<div class="data-table-wrap"><table class="data-table"><thead><tr>';
-            columns.forEach(c => { html += '<th>' + escapeHtml(c) + '</th>'; });
+            // 列头优先中文别名；title 保留原始字段名便于核对 SQL
+            columns.forEach((c, i) => {
+                const label = (names && names[i]) ? names[i] : c;
+                html += '<th title="' + escapeHtml(c) + '">' + escapeHtml(label) + '</th>';
+            });
             html += '</tr></thead><tbody>';
             shown.forEach(r => {
                 html += '<tr>';
@@ -618,7 +632,7 @@
             // 4. 数据表
             if (data.columns && data.columns.length) {
                 inner += '<details><summary>查看数据（' + data.row_count + ' 行）</summary>' +
-                    buildDataTable(data.columns, data.rows, data.truncated) + '</details>';
+                    buildDataTable(data.columns, data.rows, data.truncated, displayNames(data)) + '</details>';
             }
 
             // 5. 工具调用过程

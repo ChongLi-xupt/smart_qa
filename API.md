@@ -1,7 +1,7 @@
 # 智慧问数系统 API 接口文档
 
 - **服务版本**:v0.4.0(FastAPI)
-- **文档更新日期**:2026-08-18
+- **文档更新日期**:2026-08-26
 - **接口基址**:`http://<host>:<port>`
 - **数据格式**:请求/响应均为 `application/json`(UTF-8);SSE 接口为 `text/event-stream`
 
@@ -130,7 +130,8 @@ IP 提取规则:优先取 `X-Forwarded-For` 首段,否则取直连 IP,均无则�
     "sql": "SELECT DATE(create_time) AS d, COUNT(*) FROM users WHERE ... GROUP BY d",
     "error": null,
     "data": {
-      "columns": ["日期", "用户数"],
+      "columns": ["d", "user_count"],
+      "column_aliases": {"d": "日期", "user_count": "用户数"},
       "rows": [["2026-08-12", 156], ["2026-08-13", 203]],
       "row_count": 7,
       "truncated": false
@@ -345,7 +346,7 @@ IP 提取规则:优先取 `X-Forwarded-For` 首段,否则取直连 IP,均无则�
 | `answer` | string | 回答正文(Markdown);敏感拒绝时为固定文案 |
 | `sql` | string \| null | 最后一轮工具调用提取的 SQL;无则为 null |
 | `error` | null | 成功恒为 null(兼容字段) |
-| `data` | object | `{columns: [string], rows: [[any]], row_count: int, truncated: bool}`,无查询结果时为空结构 |
+| `data` | object | `{columns: [string], column_aliases: {string: string}, rows: [[any]], row_count: int, truncated: bool}`,无查询结果时为空结构;`column_aliases` 为列名中文别名表(见 6.4) |
 | `chart` | object | 图表建议,见 3.4 |
 | `steps` | array | 工具调用过程,见 3.5 |
 
@@ -483,7 +484,7 @@ uvicorn app:app --host 0.0.0.0 --port 5000 --workers 2
     "answer": "出于数据安全与隐私保护要求，系统不会执行涉及密码、密钥、认证令牌、身份证号、手机号、邮箱地址等敏感隐私字段的查询。请调整您的问题，避免涉及上述敏感隐私数据后重试。",
     "sql": null,
     "error": null,
-    "data": {"columns": [], "rows": [], "row_count": 0, "truncated": false},
+    "data": {"columns": [], "column_aliases": {}, "rows": [], "row_count": 0, "truncated": false},
     "chart": {"chartable": false, "chart_type": null, "reason": "没有可用的查询结果数据", "column_kinds": []},
     "steps": []
   }
@@ -541,3 +542,15 @@ data: {"type": "result", "payload": {"ok": true, "question": "...", "answer": ".
   ```
   限流拦截: 192.168.1.10 -> /api/v1/ask
   ```
+
+### 6.4 列中文别名机制(column_aliases)
+
+查询结果列名(如 `total_sales`、`order_count`)由后端在结果组装环节(`app._build_ask_payload`)自动注入中文别名,避免前端界面出现英文字段名。
+
+- **响应字段**:`data.column_aliases`,对象结构 `{原始列名: 中文别名}`,**仅包含命中别名的列**;未命中的列不产生条目,前端回退原始列名(向后兼容不含该字段的历史会话 payload);
+- **配置来源**:`config/column_aliases.yaml`(YAML 子集格式,零新增依赖),两个小节:
+  - `exact`:精确别名,列名完全一致即命中(大小写不敏感),如 `total_sales: 总销售额`;
+  - `tokens`:分词词典,`exact` 未命中时把 snake_case 列名按 `_` 分词、逐词翻译拼接合成别名(需全部词命中才合成,如 `user_count` → `用户数`);
+- **解析优先级**:精确别名 → 分词合成 → 回退原始列名;
+- **前端渲染**:ECharts 图例 / 系列名 / X 轴名与数据表格列头一律优先使用别名;表头 `title` 属性保留原始字段名便于核对 SQL;图表标题为用户问题原文,不受影响;
+- **热加载**:配置按文件 mtime 缓存,修改后无需重启服务;配置文件缺失时整体降级为原始列名,不影响现有行为。
