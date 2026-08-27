@@ -267,6 +267,32 @@ def test_sessions_reject_invalid_session_id():
     assert response.status_code == 400
 
 
+def test_sessions_filtered_by_user_id():
+    # 不同用户的会话隔离展示：/sessions?user_id=xxx 仅返回该用户的会话
+    app._history_store.append("user-a-session", "alice 的问题", _seed_payload("alice 的问题", "回答A", None), user_id="alice")
+    app._history_store.append("user-b-session", "bob 的问题", _seed_payload("bob 的问题", "回答B", None), user_id="bob")
+    try:
+        response = _client.get("/api/v1/sessions", params={"user_id": "alice"})
+        assert response.status_code == 200
+        ids = [s["session_id"] for s in response.json()["sessions"]]
+        assert "user-a-session" in ids
+        assert "user-b-session" not in ids
+        # 不携带 user_id 时返回全部（兼容旧客户端）
+        all_ids = [s["session_id"] for s in _client.get("/api/v1/sessions").json()["sessions"]]
+        assert "user-a-session" in all_ids and "user-b-session" in all_ids
+    finally:
+        app._history_store.delete_session("user-a-session")
+        app._history_store.delete_session("user-b-session")
+
+
+def test_ask_rejects_overlong_user_id():
+    response = _client.post(
+        "/api/v1/ask", json={"question": "你好", "user_id": "u" * 100}
+    )
+    assert response.status_code == 400
+    assert "user_id" in response.json()["error"]
+
+
 # ------------------------------ 列中文别名注入 ------------------------------ #
 
 

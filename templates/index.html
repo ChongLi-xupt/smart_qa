@@ -138,6 +138,33 @@
         header h1 { font-size: 20px; font-weight: 600; }
         header span { font-size: 12px; opacity: .75; }
 
+        /* 当前用户标识：靠右展示，多用户共用同一浏览器时可区分会话归属 */
+        #user-tag {
+            margin-left: auto;
+            font-size: 12px;
+            opacity: .85;
+            background: rgba(255, 255, 255, .15);
+            padding: 3px 10px;
+            border-radius: 12px;
+            white-space: nowrap;
+        }
+
+        /* 切换用户按钮：测试多用户会话隔离用；切换后开启新会话并只加载该用户的会话列表 */
+        #switch-user-btn {
+            margin-left: 8px;
+            font-size: 12px;
+            color: #fff;
+            background: rgba(255, 255, 255, .2);
+            border: 1px solid rgba(255, 255, 255, .4);
+            padding: 3px 12px;
+            border-radius: 12px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background .15s;
+        }
+        #switch-user-btn:hover { background: rgba(255, 255, 255, .35); }
+        #switch-user-btn:disabled { opacity: .5; cursor: not-allowed; }
+
         /* ---------- 对话区 ---------- */
         #chat {
             flex: 1;
@@ -357,6 +384,8 @@
         <header>
             <h1>智慧问数</h1>
             <span>用自然语言提问，自动查询数据库并生成图表（支持多轮上下文追问）</span>
+            <span id="user-tag"></span>
+            <button id="switch-user-btn" type="button" title="切换用户（测试多用户会话隔离）">⇄ 切换用户</button>
         </header>
 
         <div id="chat">
@@ -390,6 +419,32 @@
         let pending = false;          // 是否有请求进行中
         let chartSeq = 0;             // 图表实例计数，用于生成唯一 DOM id
         let currentSessionId = null;  // 当前活动会话（由后端 cookie 决定，经 /sessions 返回）
+
+        /** 用户标识：首次访问自动生成并持久化到 localStorage；
+         *  随 /ask、/feedback 请求体提交，后端据此把会话归属到用户，
+         *  侧边栏按 user_id 过滤，实现不同用户的会话隔离展示。
+         *  接入 SSO 后可替换为真实登录用户 ID。 */
+        function resolveUserId() {
+            try {
+                let uid = localStorage.getItem('smartqa_user_id');
+                if (!uid) {
+                    uid = 'u-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+                    localStorage.setItem('smartqa_user_id', uid);
+                }
+                return uid;
+            } catch (err) {
+                // localStorage 不可用时按匿名处理，不打断页面
+                return '';
+            }
+        }
+        let USER_ID = resolveUserId();
+
+        /** 同步顶部用户标签文案 */
+        function renderUserTag() {
+            document.getElementById('user-tag').textContent =
+                USER_ID ? ('当前用户：' + USER_ID) : '当前用户：匿名';
+        }
+        renderUserTag();
 
         /* ====================== 工具函数 ====================== */
 
@@ -779,10 +834,14 @@
             });
         }
 
-        /** 拉取会话列表并渲染（含后端 cookie 中的当前活动会话 ID） */
+        /** 拉取会话列表并渲染（含后端 cookie 中的当前活动会话 ID）；
+         *  携带 user_id 过滤，侧边栏仅展示当前用户自己的会话 */
         async function refreshSessionList() {
             try {
-                const resp = await apiFetch('/api/v1/sessions', { headers: apiHeaders() });
+                const url = USER_ID
+                    ? '/api/v1/sessions?user_id=' + encodeURIComponent(USER_ID)
+                    : '/api/v1/sessions';
+                const resp = await apiFetch(url, { headers: apiHeaders() });
                 if (!resp.ok) return;
                 const payload = await resp.json();
                 if (payload.current_session_id) currentSessionId = payload.current_session_id;
@@ -889,6 +948,7 @@
                         rating,
                         question: payload.question,
                         sql: payload.sql || null,
+                        user_id: USER_ID,
                     }),
                 });
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -987,7 +1047,7 @@
                 const resp = await apiFetch('/api/v1/ask_stream', {
                     method: 'POST',
                     headers: apiHeaders(),
-                    body: JSON.stringify({ question }),
+                    body: JSON.stringify({ question, user_id: USER_ID }),
                 });
 
                 const contentType = resp.headers.get('Content-Type') || '';
@@ -1049,6 +1109,45 @@
             }
             chatEl.innerHTML = WELCOME_HTML;
             refreshSessionList();
+            inputEl.focus();
+        });
+
+        /** 切换用户：更新本地用户标识，开启全新会话（避免继续回放旧用户的消息），
+         *  再重新拉取该用户的会话列表，用于测试多用户会话隔离。 */
+        const switchUserBtn = document.getElementById('switch-user-btn');
+        switchUserBtn.addEventListener('click', async () => {
+            if (pending) return;
+            const input = window.prompt('请输入要切换到的用户 ID（如 user1、user2）：', USER_ID);
+            if (input === null) return;  // 取消不切换
+            const newUid = input.trim();
+            if (!newUid) {
+                alert('用户 ID 不能为空。');
+                return;
+            }
+            if (newUid.length > 64) {
+                alert('用户 ID 过长（上限 64 字）。');
+                return;
+            }
+            if (newUid === USER_ID) return;  // 未变化时无需切换
+            USER_ID = newUid;
+            try { localStorage.setItem('smartqa_user_id', USER_ID); } catch (err) {}
+            renderUserTag();
+            switchUserBtn.disabled = true;
+            try {
+                // 开启新会话：旧会话归属原用户（后端首次写入即固定），不跨用户混用
+                const resp = await apiFetch('/api/v1/new_chat', { method: 'POST', headers: apiHeaders() });
+                if (resp.ok) {
+                    const payload = await resp.json().catch(() => null);
+                    currentSessionId = (payload && payload.session_id) || null;
+                }
+            } catch (err) {
+                currentSessionId = null;
+            } finally {
+                switchUserBtn.disabled = false;
+            }
+            chatEl.innerHTML = WELCOME_HTML;
+            await refreshSessionList();
+            await refreshChatFromServer();
             inputEl.focus();
         });
 

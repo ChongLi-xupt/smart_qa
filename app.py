@@ -48,7 +48,7 @@ try:
 except ImportError:
     pass
 
-from fastapi import APIRouter, Depends, FastAPI, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from itsdangerous import BadSignature, URLSafeTimedSerializer
@@ -340,6 +340,8 @@ _feedback_lock = threading.Lock()
 # 问题输入长度上限：防止超长文本消耗 LLM token
 _MAX_QUESTION_LENGTH = 500
 _MAX_SESSION_ID_LENGTH = 64
+# 用户 ID 长度上限：前端自动生成或业务系统下发的用户标识
+_MAX_USER_ID_LENGTH = 64
 
 
 # ---------------------------------------------------------------------- #
@@ -351,6 +353,9 @@ class AskRequest(BaseModel):
     """POST /ask 与 /ask_stream 的请求体。"""
 
     question: str
+    # 用户标识：前端自动生成或业务系统下发，用于会话归属与按用户隔离展示；
+    # 可选字段，不传按匿名处理（向后兼容旧客户端）
+    user_id: str = ""
 
     @field_validator("question")
     @classmethod
@@ -364,6 +369,16 @@ class AskRequest(BaseModel):
             )
         return value
 
+    @field_validator("user_id")
+    @classmethod
+    def _validate_user_id(cls, value: str) -> str:
+        value = (value or "").strip()
+        if len(value) > _MAX_USER_ID_LENGTH:
+            raise ValueError(
+                f"user_id 过长（上限 {_MAX_USER_ID_LENGTH} 字），请精简后重试。"
+            )
+        return value
+
 
 class FeedbackRequest(BaseModel):
     """POST /feedback 的请求体。"""
@@ -372,6 +387,7 @@ class FeedbackRequest(BaseModel):
     question: str = ""
     sql: str | None = None
     comment: str | None = None
+    user_id: str = ""
 
     @field_validator("rating")
     @classmethod
@@ -386,6 +402,16 @@ class FeedbackRequest(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("question 不能为空。")
+        return value
+
+    @field_validator("user_id")
+    @classmethod
+    def _validate_user_id(cls, value: str) -> str:
+        value = (value or "").strip()
+        if len(value) > _MAX_USER_ID_LENGTH:
+            raise ValueError(
+                f"user_id 过长（上限 {_MAX_USER_ID_LENGTH} 字），请精简后重试。"
+            )
         return value
 
 
@@ -501,12 +527,17 @@ def healthz() -> JSONResponse | dict[str, Any]:
 api_router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_key)])
 
 
-def _finalize_result(session_id: str, question: str, result: dict[str, Any]) -> None:
+def _finalize_result(
+    session_id: str, question: str, result: dict[str, Any], user_id: str = ""
+) -> None:
     """提问完成后的公共收尾：写会话历史（完整 payload）+ token/耗时日志。"""
     # 成功的回答写入会话历史：完整 payload 供侧边栏回放，
-    # LLM 上下文由存储层按 HISTORY_MAX_MESSAGES 截取
+    # LLM 上下文由存储层按 HISTORY_MAX_MESSAGES 截取；
+    # user_id 随首次写入绑定会话归属，供会话列表按用户隔离展示
     if result.get("error") is None and not result.get("rejected"):
-        _history_store.append(session_id, question, _build_ask_payload(question, result))
+        _history_store.append(
+            session_id, question, _build_ask_payload(question, result), user_id=user_id
+        )
 
     # token 用量与耗时只进服务端日志，便于成本核算与性能分析
     # （敏感拒绝路径不经过 Agent，无 usage 字段时跳过）
@@ -567,7 +598,7 @@ def ask(
 
     # 分层异常（配置/LLM/数据库/参数）由全局 exception_handler 统一处理
     result = get_qa().ask(question, chat_history=history)
-    _finalize_result(session_id, question, result)
+    _finalize_result(session_id, question, result, user_id=payload.user_id)
     return _build_ask_payload(question, result)
 
 
@@ -590,7 +621,7 @@ def ask_stream(
             for event in get_qa().ask_stream(question, chat_history=history):
                 if event.get("type") == "result":
                     result = event["result"]
-                    _finalize_result(session_id, question, result)
+                    _finalize_result(session_id, question, result, user_id=payload.user_id)
                     yield _sse(
                         {"type": "result", "payload": _build_ask_payload(question, result)}
                     )
@@ -637,6 +668,7 @@ def feedback(
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
+        "user_id": payload.user_id,
         "rating": payload.rating,
         "question": payload.question[:_MAX_QUESTION_LENGTH],
         "sql": (payload.sql or "")[:2000] or None,
@@ -654,12 +686,20 @@ def feedback(
 def list_sessions(
     request: Request,
     session_id: str = Depends(get_session_id),
+    user_id: str | None = Query(
+        default=None, max_length=_MAX_USER_ID_LENGTH, description="按用户过滤会话列表"
+    ),
 ) -> dict[str, Any]:
-    """历史会话列表（侧边栏）：按最近更新倒序，附带当前活动会话 ID。"""
+    """历史会话列表（侧边栏）：按最近更新倒序，附带当前活动会话 ID。
+
+    携带 ``user_id`` 查询参数时仅返回该用户的会话（多用户隔离展示），
+    不携带时返回全部（兼容旧客户端与管理视角）。
+    """
+    user_filter = (user_id or "").strip() or None
     return {
         "ok": True,
         "current_session_id": session_id,
-        "sessions": _history_store.list_sessions(),
+        "sessions": _history_store.list_sessions(user_id=user_filter),
     }
 
 

@@ -81,6 +81,34 @@ def test_list_sessions_metadata():
     assert sessions[0]["message_count"] == 2
     assert sessions[0]["created_at"]
     assert sessions[0]["updated_at"]
+    # 未携带 user_id 的会话归属为空串（匿名）
+    assert sessions[0]["user_id"] == ""
+
+
+def test_list_sessions_filtered_by_user_id():
+    store = _make_store()
+    store.append("s1", "alice 的问题", _PAYLOAD, user_id="alice")
+    store.append("s2", "bob 的问题", _PAYLOAD, user_id="bob")
+    store.append("s3", "匿名问题", _PAYLOAD)  # 不携带 user_id（旧客户端兼容）
+    # 按用户过滤：只返回自己的会话，并携带 user_id 元数据
+    alice_sessions = store.list_sessions(user_id="alice")
+    assert [s["session_id"] for s in alice_sessions] == ["s1"]
+    assert alice_sessions[0]["user_id"] == "alice"
+    bob_sessions = store.list_sessions(user_id="bob")
+    assert [s["session_id"] for s in bob_sessions] == ["s2"]
+    # 不过滤时返回全部（含匿名会话）
+    assert len(store.list_sessions()) == 3
+
+
+def test_session_user_id_bound_on_first_write():
+    # 会话归属首次写入即固定，后续请求不得改挂到他人名下
+    store = _make_store()
+    store.append("s1", "问题1", _PAYLOAD, user_id="alice")
+    store.append("s1", "问题2", _PAYLOAD, user_id="bob")
+    sessions = store.list_sessions()
+    assert len(sessions) == 1
+    assert sessions[0]["user_id"] == "alice"
+    assert sessions[0]["message_count"] == 4
 
 
 def test_title_truncated_to_30_chars():

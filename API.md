@@ -113,6 +113,9 @@ IP 提取规则:优先取 `X-Forwarded-For` 首段,否则取直连 IP,均无则�
   | 字段 | 类型 | 必填 | 校验规则 |
   |---|---|---|---|
   | `question` | string | 是 | strip 后非空;长度 ≤ 500 字 |
+  | `user_id` | string | 否 | strip 后长度 ≤ 64 字;不传按匿名处理(向后兼容旧客户端) |
+
+  `user_id` 为用户标识(前端自动生成或业务系统下发),首轮问答成功写入历史时把会话归属到该用户(归属首次写入即固定,不可被后续请求改挂);会话列表接口可据此按用户隔离展示(见 2.3)。
 
   校验失败示例 → `400`:
 
@@ -188,7 +191,12 @@ IP 提取规则:优先取 `X-Forwarded-For` 首段,否则取直连 IP,均无则�
 
 历史会话列表(侧边栏),按最近更新倒序,附带当前活动会话 ID。
 
-- **请求参数**:无(当前会话取自已签名的 Cookie)
+- **请求参数**:
+
+  | 参数 | 位置 | 类型 | 说明 |
+  |---|---|---|---|
+  | `user_id` | query | string \| 不传 | 可选,长度 ≤ 64;携带时**仅返回该用户的会话**(多用户隔离展示),不传返回全部(兼容旧客户端与管理视角);当前会话取自已签名的 Cookie |
+
 - **响应**(`200`):
 
   ```json
@@ -198,6 +206,7 @@ IP 提取规则:优先取 `X-Forwarded-For` 首段,否则取直连 IP,均无则�
     "sessions": [
       {
         "session_id": "8a66064651f241349952c94ba97229fb",
+        "user_id": "u-m3k2ja-9x8w1p4q",
         "title": "最近 7 天每天新增多少用户？",
         "created_at": "2026-08-18T09:09:00.123456+00:00",
         "updated_at": "2026-08-18T09:10:00.654321+00:00",
@@ -207,6 +216,7 @@ IP 提取规则:优先取 `X-Forwarded-For` 首段,否则取直连 IP,均无则�
   }
   ```
 
+  - `user_id`:会话归属用户;提问时未携带用户标识的会话为空串(匿名)
   - `title`:首条用户问题前 30 字;无问答记录时显示 `(空会话)`
   - `message_count`:消息条数(1 轮问答 = 2 条)
 
@@ -286,6 +296,7 @@ IP 提取规则:优先取 `X-Forwarded-For` 首段,否则取直连 IP,均无则�
   | `question` | string | 是 | strip 后非空(落盘截断到 500 字) |
   | `sql` | string \| null | 否 | 落盘截断到 2000 字,空则存 null |
   | `comment` | string \| null | 否 | 落盘截断到 500 字,空则存 null |
+  | `user_id` | string | 否 | strip 后长度 ≤ 64 字;不传按匿名处理 |
 
 - **成功响应**(`200`):
 
@@ -296,7 +307,7 @@ IP 提取规则:优先取 `X-Forwarded-For` 首段,否则取直连 IP,均无则�
 - **落盘记录结构**(每行一个 JSON):
 
   ```json
-  {"ts": "2026-08-18T09:11:00.000000+00:00", "session_id": "...", "rating": "up", "question": "...", "sql": "...", "comment": null}
+  {"ts": "2026-08-18T09:11:00.000000+00:00", "session_id": "...", "user_id": "u-m3k2ja-9x8w1p4q", "rating": "up", "question": "...", "sql": "...", "comment": null}
   ```
 
 ### 2.5 健康检查
@@ -322,7 +333,8 @@ IP 提取规则:优先取 `X-Forwarded-For` 首段,否则取直连 IP,均无则�
 
 ```json
 {
-  "question": "string，必填，strip 后非空且 ≤ 500 字"
+  "question": "string，必填，strip 后非空且 ≤ 500 字",
+  "user_id": "string，可选，用户标识，≤ 64 字，不传按匿名处理"
 }
 ```
 
@@ -333,7 +345,8 @@ IP 提取规则:优先取 `X-Forwarded-For` 首段,否则取直连 IP,均无则�
   "rating": "string，必填，仅允许 \"up\" | \"down\"",
   "question": "string，必填，strip 后非空",
   "sql": "string | null，可选",
-  "comment": "string | null，可选"
+  "comment": "string | null，可选",
+  "user_id": "string，可选，用户标识，≤ 64 字"
 }
 ```
 
@@ -372,6 +385,7 @@ IP 提取规则:优先取 `X-Forwarded-For` 首段,否则取直连 IP,均无则�
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `session_id` | string | 32 位 hex |
+| `user_id` | string | 会话归属用户;提问时未携带用户标识的会话为空串(匿名) |
 | `title` | string | 首条用户问题前 30 字;无记录时为 `(空会话)` |
 | `created_at` | string | 创建时间(ISO 8601, UTC) |
 | `updated_at` | string | 最近更新时间(ISO 8601, UTC) |
