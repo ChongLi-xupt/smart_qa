@@ -12,12 +12,28 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sql_guard import (
-    _extract_table_sequence,
     ensure_limit,
     find_sensitive_fields,
     guard_select,
     prepare_select,
+    validate_sql_schema,
 )
+
+
+class FakeSchemaDB:
+    """假数据库管理器：只提供 validate_sql_schema 需要的两个接口。"""
+
+    _TABLES = {
+        "users": ["id", "name", "city"],
+        "orders": ["id", "user_id", "amount"],
+        "products": ["id", "category", "price"],
+    }
+
+    def get_tables(self):
+        return [{"name": name} for name in self._TABLES]
+
+    def get_column_names(self, table_name):
+        return list(self._TABLES[table_name])
 
 # ---------------------------------------------------------------------- #
 # guard_select：AST 级只读校验
@@ -119,40 +135,84 @@ def test_sensitive_no_false_positive_on_hotel():
 # ---------------------------------------------------------------------- #
 
 
-def test_extract_table_sequence_multi_join_chain():
-    """多表 JOIN 链：第一个 ON 条件之后继续 JOIN 的表不能丢失。"""
-    from_clause = (
-        " orders o\n"
-        "JOIN users u ON o.user_id = u.id\n"
-        "JOIN products p ON o.product_id = p.id\n"
+def test_validate_rejects_unknown_table():
+    """引用不存在的表时直接拒绝。"""
+    error = validate_sql_schema("SELECT id FROM ghost_table", FakeSchemaDB())
+    assert error and "不存在的表" in error
+
+
+def test_validate_rejects_unknown_qualified_column():
+    """限定列引用编造字段时，错误信息应列出真实字段。"""
+    error = validate_sql_schema(
+        "SELECT users.nick_name FROM users", FakeSchemaDB()
     )
-    refs = _extract_table_sequence(from_clause)
-    assert [table for table, _alias in refs] == ["orders", "users", "products"]
-    assert refs[2] == ("products", "p")  # ON 条件内的标识符不再污染别名
+    assert error and "nick_name" in error and "实际字段" in error
+    assert "name" in error  # 真实字段清单在场，便于模型修正
 
 
-def test_extract_table_sequence_comma_joined_tables():
-    """逗号连接的多表也能被完整提取。"""
-    from_clause = " users u, products p "
-    refs = _extract_table_sequence(from_clause)
-    assert refs == [("users", "u"), ("products", "p")]
-
-
-def test_extract_table_sequence_on_clause_then_join():
-    """ON 条件中出现的字段名（如 group/order 前缀）不会截断后续 JOIN。"""
-    from_clause = (
-        " orders o JOIN users u ON o.user_id = u.id "
-        "LEFT JOIN products p ON p.id = o.product_id "
+def test_validate_allows_join_chain_with_aliases():
+    """多表 JOIN 链 + 别名的合法查询应通过。"""
+    sql = (
+        "SELECT u.name, SUM(o.amount) AS total "
+        "FROM users u JOIN orders o ON u.id = o.user_id "
+        "JOIN products p ON o.id = p.id "
+        "GROUP BY u.name ORDER BY total DESC"
     )
-    refs = _extract_table_sequence(from_clause)
-    assert [table for table, _alias in refs] == ["orders", "users", "products"]
+    assert validate_sql_schema(sql, FakeSchemaDB()) is None
 
 
-def test_extract_table_sequence_using_clause():
-    """USING 连接条件内的字段名不参与表名提取。"""
-    from_clause = " orders o JOIN users u USING (user_id) "
-    refs = _extract_table_sequence(from_clause)
-    assert [table for table, _alias in refs] == ["orders", "users"]
+def test_validate_supports_cte():
+    """CTE 名称不当作物理表，其内部引用的真实字段正常核对。"""
+    sql = (
+        "WITH big_orders AS (SELECT user_id, amount FROM orders WHERE amount > 100) "
+        "SELECT COUNT(*) AS cnt FROM big_orders"
+    )
+    assert validate_sql_schema(sql, FakeSchemaDB()) is None
+    bad = (
+        "WITH big_orders AS (SELECT user_id, fee FROM orders) "
+        "SELECT COUNT(*) FROM big_orders"
+    )
+    error = validate_sql_schema(bad, FakeSchemaDB())
+    assert error and "fee" in error
+
+
+def test_validate_supports_subquery_alias():
+    """派生表别名不核对，子查询内部的真实字段仍被核对。"""
+    sql = "SELECT t.user_id FROM (SELECT user_id FROM orders) t"
+    assert validate_sql_schema(sql, FakeSchemaDB()) is None
+    bad = "SELECT t.user_id FROM (SELECT buyer_id FROM orders) t"
+    error = validate_sql_schema(bad, FakeSchemaDB())
+    assert error and "buyer_id" in error
+
+
+def test_validate_flags_ambiguous_bare_column():
+    """多表同名的裸列引用应在执行前被检出歧义。"""
+    sql = "SELECT id FROM users JOIN orders ON users.id = orders.user_id"
+    error = validate_sql_schema(sql, FakeSchemaDB())
+    assert error and "多个表" in error
+
+
+def test_validate_allows_order_by_output_alias():
+    """ORDER BY/GROUP BY 引用 AS 输出别名不应被误判为编造字段。"""
+    sql = (
+        "SELECT city, COUNT(*) AS user_count FROM users "
+        "GROUP BY city ORDER BY user_count DESC LIMIT 1"
+    )
+    assert validate_sql_schema(sql, FakeSchemaDB()) is None
+
+
+def test_validate_supports_union():
+    """UNION 两侧的表与字段都应被核对。"""
+    ok_sql = "SELECT id FROM users UNION ALL SELECT id FROM products"
+    assert validate_sql_schema(ok_sql, FakeSchemaDB()) is None
+    bad_sql = "SELECT id FROM users UNION ALL SELECT serial FROM products"
+    error = validate_sql_schema(bad_sql, FakeSchemaDB())
+    assert error and "serial" in error
+
+
+def test_validate_skips_unparseable_sql():
+    """无法解析的 SQL 不核对，留给 EXPLAIN 给出更准确的错误。"""
+    assert validate_sql_schema("SELECT id FROM (", FakeSchemaDB()) is None
 
 
 def test_prepare_rejects_dangerous_sql():

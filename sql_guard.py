@@ -202,147 +202,53 @@ def _sensitive_reject_message(fields: list[str]) -> str:
 # SQL 与真实 schema 一致性核对（防止大模型编造不存在的表/字段）
 # ---------------------------------------------------------------------- #
 
-# MySQL 常用关键字与内置常量。凡是命中这份名单的裸标识符都不是表名/字段名，
-# 直接跳过核对，避免把 COUNT、DESC 等误判为"编造的字段"。
-_SQL_RESERVED_WORDS = frozenset(
-    {
-        "select", "from", "where", "group", "by", "order", "having", "limit",
-        "offset", "join", "inner", "left", "right", "full", "outer", "cross",
-        "on", "using", "as", "and", "or", "not", "in", "is", "null", "like",
-        "between", "exists", "case", "when", "then", "else", "end", "asc",
-        "desc", "distinct", "union", "all", "any", "some", "true", "false",
-        "if", "ifnull", "nullif", "coalesce", "cast", "convert", "interval",
-        "date", "time", "datetime", "timestamp", "year", "month", "day",
-        "hour", "minute", "second", "count", "sum", "avg", "min", "max",
-        "row_number", "rank", "dense_rank", "over", "partition", "with",
-        "recursive", "div", "mod", "char", "varchar", "int", "integer",
-        "bigint", "decimal", "float", "double", "text", "blob", "binary",
-        "unsigned", "signed", "charset", "collate", "escape", "for", "both",
-        "leading", "trailing", "regexp", "rlike", "sounds", "separator",
-        "current_date", "current_time", "current_timestamp", "now",
-        "curdate", "curtime", "utc_date", "utc_time", "utc_timestamp",
-        "date_format", "date_add", "date_sub", "datediff", "timestampdiff",
-        "unix_timestamp", "from_unixtime", "str_to_date", "extract",
-        "last_day", "concat", "concat_ws", "substring", "substr", "length",
-        "trim", "ltrim", "rtrim", "upper", "lower", "replace", "round",
-        "floor", "ceil", "ceiling", "abs", "power", "sqrt", "greatest",
-        "least", "format", "group_concat", "std", "stddev", "variance",
-        "values", "dual", "window", "rows", "range", "preceding", "following",
-        "unbounded", "current", "first", "last",
-    }
-)
 
-# SELECT 语句中表引用位置的关键词（JOIN 家族与逗号之外的结构词），
-# 解析 FROM/JOIN 子句时需要排除。
-# 注意：on/using 不在其中——它们标志着 JOIN 条件开始，由状态机单独处理，
-# 否则会把 ON 之后继续 JOIN 的表误判为子句结束而丢失。
-_TABLE_CONTEXT_STOP_WORDS = frozenset(
-    {
-        "where", "group", "order", "having", "limit", "offset", "union",
-        "set", "window",
-    }
-)
-
-_JOIN_KEYWORDS = frozenset(
-    {"join", "inner", "left", "right", "full", "outer", "cross", "straight_join"}
-)
-
-# 常见表别名前缀（如 s/r/u/t/o/a + 数字）。别名本身不是数据库对象，
-# 但限定列引用（如 s.create_time）需要借助它定位到真实表。
-_ALIAS_PATTERN = re.compile(r"^[a-z]{1,3}\d*$")
-
-# 限定列引用的两段拆分：`alias`.`col` / alias.col / `alias`.col 等。
-_QUALIFIED_REF_PATTERN = re.compile(
-    r"`?([\w\u4e00-\u9fff]+)`?\s*\.\s*`?([\w\u4e00-\u9fff]+)`?"
-)
-
-
-def _extract_table_sequence(from_clause: str) -> list[tuple[str, str | None]]:
-    """从 FROM/JOIN 子句文本中提取 ``(表名, 别名)`` 序列。
-
-    支持逗号连接的多表与 JOIN 链；ON/USING 条件内的标识符不参与
-    提取，条件结束后遇到下一个 JOIN 关键字继续收集后续表。
-    子查询内部的表引用无法可靠归属别名，解析到括号即停止。
-    """
-    tokens: list[str] = []
-    for raw in re.split(r"[\s()]+", from_clause.replace(",", " , ")):
-        token = raw.strip("`").strip()
-        if token:
-            tokens.append(token)
-
-    references: list[tuple[str, str | None]] = []
-    expect_table = True
-    pending_join = False
-    skipping_on = False  # 位于 ON/USING 条件内部，忽略直到下一个 JOIN
-    for token in tokens:
-        lowered = token.lower()
-        if token == ",":
-            if not skipping_on:
-                expect_table = True  # 逗号连接的下一个表
-            continue
-        if skipping_on:
-            if lowered in _JOIN_KEYWORDS:
-                pending_join = True
-                skipping_on = False
-                continue
-            if lowered in _TABLE_CONTEXT_STOP_WORDS:
-                break
-            continue
-        if expect_table:
-            if lowered in _TABLE_CONTEXT_STOP_WORDS or lowered in {"select", "with"}:
-                break
-            references.append((token, None))
-            expect_table = False
-            continue
-        if lowered in _JOIN_KEYWORDS:
-            pending_join = True
-            continue
-        if lowered == "as":
-            continue
-        if lowered in _TABLE_CONTEXT_STOP_WORDS:
-            break
-        if lowered in {"on", "using"}:
-            skipping_on = True
-            continue
-        if pending_join:
-            references.append((token, None))
-            pending_join = False
-            expect_table = False
-        elif _ALIAS_PATTERN.match(lowered) or not lowered.isupper():
-            # 紧跟表名的短标识符视为别名（别名本身不参与核对）
-            references[-1] = (references[-1][0], token)
-    return references
-
-
-def _extract_from_join_clause(sql_code: str) -> str | None:
-    """提取去除字面量后的 SQL 中 FROM 之后、WHERE 等子句之前的片段。"""
-    match = re.search(
-        r"(?is)\bFROM\b(.*?)(?=\bWHERE\b|\bGROUP\s+BY\b|\bORDER\s+BY\b"
-        r"|\bHAVING\b|\bLIMIT\b|\bUNION\b|\bWINDOW\b|$)",
-        sql_code,
-    )
-    return match.group(1) if match else None
 
 
 def validate_sql_schema(sql_text: str, db_manager) -> str | None:
-    """核对 SQL 引用的表名/字段名是否与数据库真实 schema 一致。
+    """核对 SQL 引用的表名/字段名是否与数据库真实 schema 一致（AST 版）。
 
-    全部通过时返回 ``None``；发现编造（或写错）的表/字段时返回中文
-    错误说明，其中会列出该表的真实字段，引导模型修正 SQL 或如实
-    告知用户该维度无法查询，而不是继续编造。
+    基于 sqlglot 语法树，天然覆盖多表 JOIN、逗号连接表、子查询、
+    CTE 与 UNION；全部通过时返回 ``None``；发现编造（或写错）的
+    表/字段时返回中文错误说明，其中会列出该表的真实字段，引导模型
+    修正 SQL 或如实告知用户该维度无法查询，而不是继续编造。
+    SQL 无法解析或读取不到数据库元数据时不做核对，交由 EXPLAIN 与
+    真实执行兜底。
     """
-    sql_code = _SQL_STRIP_PATTERN.sub(" ", sql_text)
-
-    from_clause = _extract_from_join_clause(sql_code)
-    if from_clause is None:
-        # 无法定位 FROM 子句时不做核对，交由 EXPLAIN 与真实执行兜底。
+    normalized = sql_text.strip()
+    if normalized.endswith(";"):
+        normalized = normalized[:-1].rstrip()
+    if not normalized:
         return None
 
-    table_refs = _extract_table_sequence(from_clause)
+    try:
+        statement = sqlglot.parse_one(normalized, read="mysql")
+    except sqlglot.errors.ParseError:
+        # 语法都解析不了时不做核对，EXPLAIN 会给出更准确的错误信息
+        return None
+    if not isinstance(statement, (exp.Select, exp.Union)):
+        # 非 SELECT 语句已被 guard_select 拒绝，此处无需核对
+        return None
+
+    # CTE（WITH ... AS）名称与派生表（子查询）别名不是物理表，
+    # 其列也无法对照真实字段，统一记录后跳过。
+    virtual_names = {
+        node.alias.lower()
+        for node in statement.find_all(exp.CTE, exp.Subquery)
+        if node.alias
+    }
+
+    # 1. 收集物理表引用（含别名），先核对表名：引用不存在的表直接拒绝
+    table_refs: list[tuple[str, str]] = []
+    for table in statement.find_all(exp.Table):
+        table_name = table.name
+        if not table_name or table_name.lower() in virtual_names:
+            continue
+        table_refs.append((table_name, table.alias or ""))
+
     if not table_refs:
         return None
 
-    # 数据库真实表名集合（大小写不敏感比较）
     try:
         real_tables = db_manager.get_tables()
     except SQLAlchemyError:
@@ -350,7 +256,6 @@ def validate_sql_schema(sql_text: str, db_manager) -> str | None:
     real_table_names = {str(item.get("name") or "") for item in real_tables}
     real_table_lower = {name.lower() for name in real_table_names if name}
 
-    # 1. 核对表名：引用了不存在的表时直接拒绝并给出相近表名提示
     for table_name, _alias in table_refs:
         if table_name.lower() not in real_table_lower:
             return (
@@ -380,53 +285,92 @@ def validate_sql_schema(sql_text: str, db_manager) -> str | None:
             table_columns[alias.lower()] = column_set
             resolved_names[alias.lower()] = matched
 
-    # 3. 核对裸列引用（未加表限定）：只要任一被引用表的字段集合包含它即放行
-    all_columns = set().union(*table_columns.values()) if table_columns else set()
-    qualified_parts = set()
-    for match in _QUALIFIED_REF_PATTERN.finditer(sql_code):
-        qualified_parts.add((match.start(), match.end()))
+    if not table_columns:
+        return None
 
-    # AS 定义的别名（如 COUNT(s.id) AS site_count）不是数据库字段，
-    # ORDER BY/GROUP BY 也允许引用别名，统一排除以免误报。
-    alias_names = {
-        match.group(1).lower()
-        for match in re.finditer(
-            r"(?i)\bAS\s+`?([\w\u4e00-\u9fff]+)`?", sql_code
-        )
+    all_columns = set().union(*table_columns.values())
+    # AS 定义的输出别名（如 COUNT(*) AS cnt），ORDER BY/GROUP BY 可合法引用
+    output_aliases = {
+        node.alias.lower() for node in statement.find_all(exp.Alias) if node.alias
     }
 
-    problems: list[str] = []
-    for match in re.finditer(r"[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*", sql_code):
-        if any(start <= match.start() < end for start, end in qualified_parts):
-            continue
-        word = match.group(0)
-        lowered = word.lower()
-        if lowered in _SQL_RESERVED_WORDS or lowered in table_columns:
-            continue
-        if lowered in alias_names:
-            continue
-        # 紧跟左括号的标识符是函数调用（含自定义函数），不作为字段核对
-        if re.match(r"\s*\(", sql_code[match.end():]):
-            continue
-        if all_columns and lowered not in all_columns:
-            problems.append(f"字段 '{word}' 在本次引用的任何表中都不存在")
-
-    # 4. 核对限定列引用 alias.col / table.col
-    for match in _QUALIFIED_REF_PATTERN.finditer(sql_code):
-        prefix, column = match.group(1), match.group(2)
-        prefix_lower, column_lower = prefix.lower(), column.lower()
-        if prefix_lower in _SQL_RESERVED_WORDS:
-            continue
-        column_set = table_columns.get(prefix_lower)
-        if column_set is None:
-            # 前缀无法对应到已知表/别名（可能来自子查询），跳过以免误伤
-            continue
-        if column_lower not in column_set:
-            resolved = resolved_names.get(prefix_lower, prefix)
-            problems.append(
-                f"表 '{resolved}' 中不存在字段 '{column}'，"
-                f"该表实际字段为: {', '.join(sorted(column_set))}"
+    # 3. 遍历语法树中的全部列引用逐一核对（函数、字面量、关键字在
+    # AST 中各有节点类型，不会混入列引用，无需保留字名单过滤）。
+    # 同时记录每个节点所属的 SELECT：歧义检测只在单个 SELECT 作用域
+    # 内做，UNION 各分支的同名列互不冲突。
+    column_scopes: list[tuple[exp.Expression, exp.Select | None]] = []
+    select_table_refs: dict[exp.Select, set[str]] = {}
+    for node in statement.walk():
+        if isinstance(node, exp.Table):
+            if node.name and node.name.lower() not in virtual_names:
+                scope = node.find_ancestor(exp.Select, exp.Union)
+                if isinstance(scope, exp.Select):
+                    refs = select_table_refs.setdefault(scope, set())
+                    refs.add(node.name.lower())
+                    if node.alias:
+                        refs.add(node.alias.lower())
+        elif isinstance(node, exp.Column):
+            column_scopes.append(
+                (node, node.find_ancestor(exp.Select, exp.Union))
             )
+
+    problems: list[str] = []
+    for column, scope in column_scopes:
+        column_name = column.name
+        if not column_name:
+            continue
+        column_lower = column_name.lower()
+        prefix = column.table
+        if prefix:
+            prefix_lower = prefix.lower()
+            if prefix_lower in virtual_names:
+                continue  # CTE/派生表的列引用无法对照真实字段
+            column_set = table_columns.get(prefix_lower)
+            if column_set is None:
+                # 前缀无法对应到已知表（可能来自子查询），跳过以免误伤
+                continue
+            if column_lower not in column_set:
+                resolved = resolved_names.get(prefix_lower, prefix)
+                problems.append(
+                    f"表 '{resolved}' 中不存在字段 '{column_name}'，"
+                    f"该表实际字段为: {', '.join(sorted(column_set))}"
+                )
+            continue
+
+        # 裸列（未加表限定）
+        if column_lower in output_aliases:
+            continue
+        if column_lower not in all_columns:
+            problems.append(f"字段 '{column_name}' 在本次引用的任何表中都不存在")
+            continue
+        holders = sorted(
+            {
+                resolved_names[key]
+                for key, column_set in table_columns.items()
+                if column_lower in column_set
+            }
+        )
+        if len(holders) > 1:
+            # 只在本 SELECT 实际引用的表范围内判歧义：全局存在多表
+            # 但本分支只用了其一（如 UNION 另一侧）时不构成歧义。
+            scope_refs = (
+                select_table_refs.get(scope, set())
+                if isinstance(scope, exp.Select)
+                else set(table_columns)
+            )
+            holders_in_scope = sorted(
+                {
+                    resolved_names[key]
+                    for key in scope_refs
+                    if key in table_columns and column_lower in table_columns[key]
+                }
+            )
+            if len(holders_in_scope) > 1:
+                problems.append(
+                    f"字段 '{column_name}' 同时存在于多个表"
+                    f"（{', '.join(holders_in_scope)}），"
+                    "请为其加上表名或别名限定，避免执行时产生歧义"
+                )
 
     if not problems:
         return None

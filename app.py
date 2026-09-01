@@ -18,6 +18,8 @@
     QUERY_TIMEOUT_MS（只读查询会话级超时，默认 15000）
     SESSION_SECRET_KEY（必填，≥ 32 位）/ SESSION_COOKIE_SECURE
     RATE_LIMIT_ASK / RATE_LIMIT_NEW_CHAT / RATE_LIMIT_FEEDBACK（每 IP 每分钟上限）
+    LLM_MAX_CONCURRENCY（同时在执行的提问数上限，0=不限；本地模型部署建议设置）
+    LLM_QUEUE_TIMEOUT（并发满员后排队等待秒数，超时快速失败，默认 30）
     WEB_API_KEYS（可选，逗号分隔；设置后 /api/v1/* 需携带 X-API-Key，P3-19）
 
 启动::
@@ -305,6 +307,58 @@ def make_rate_limit_dependency(limiter: RateLimiter):
 _ask_rate_limit = make_rate_limit_dependency(_ask_limiter)
 _new_chat_rate_limit = make_rate_limit_dependency(_new_chat_limiter)
 _feedback_rate_limit = make_rate_limit_dependency(_feedback_limiter)
+
+
+# ---------------------------------------------------------------------- #
+# LLM 并发控制：本地模型部署（vLLM/Ollama 等）推理吞吐有限，无限制的并行
+# 提问会在推理服务处堆积排队，最终大面积超时。LLM_MAX_CONCURRENCY 限制同时
+# 进入 Agent 的提问数；排队等待 LLM_QUEUE_TIMEOUT 秒仍拿不到名额则快速失败，
+# 体验优于全体超时。默认 0 不限制（云端 API 场景行为不变）。
+# 注意：信号量为进程内实现，多 worker 时全局并发上限 = worker 数 × 该值。
+# ---------------------------------------------------------------------- #
+
+
+def _build_llm_semaphore() -> threading.BoundedSemaphore | None:
+    """按环境变量创建并发信号量；未配置或非法值时返回 None（不限制）。"""
+    try:
+        max_concurrency = int(os.getenv("LLM_MAX_CONCURRENCY", "0"))
+    except ValueError:
+        max_concurrency = 0
+    if max_concurrency <= 0:
+        return None
+    return threading.BoundedSemaphore(max_concurrency)
+
+
+_llm_semaphore = _build_llm_semaphore()
+
+try:
+    _LLM_QUEUE_TIMEOUT = max(1, int(os.getenv("LLM_QUEUE_TIMEOUT", "30")))
+except ValueError:
+    _LLM_QUEUE_TIMEOUT = 30
+
+_LLM_BUSY_MESSAGE = "当前提问人数较多，服务繁忙，请稍后重试。"
+
+
+def _acquire_llm_slot() -> bool:
+    """获取一个 LLM 并发名额；未配置限制时恒成功。
+
+    排队超过 ``_LLM_QUEUE_TIMEOUT`` 秒仍未获取时返回 False，
+    由调用方快速失败，避免请求在推理服务处无限堆积。
+    """
+    if _llm_semaphore is None:
+        return True
+    acquired = _llm_semaphore.acquire(timeout=_LLM_QUEUE_TIMEOUT)
+    if not acquired:
+        logger.warning(
+            "LLM 并发已满：排队 %s 秒未获取名额，拒绝请求", _LLM_QUEUE_TIMEOUT
+        )
+    return acquired
+
+
+def _release_llm_slot() -> None:
+    """归还 LLM 并发名额（未配置限制时为空操作）。"""
+    if _llm_semaphore is not None:
+        _llm_semaphore.release()
 
 
 # ---------------------------------------------------------------------- #
@@ -596,8 +650,14 @@ def ask(
     question = payload.question
     history = _get_history(session_id)
 
-    # 分层异常（配置/LLM/数据库/参数）由全局 exception_handler 统一处理
-    result = get_qa().ask(question, chat_history=history)
+    # 并发名额先于 Agent 获取：满员时快速失败，不占用后续任何资源；
+    # 分层异常（配置/LLM/数据库/参数）由全局 exception_handler 统一处理。
+    if not _acquire_llm_slot():
+        raise StarletteHTTPException(status_code=503, detail=_LLM_BUSY_MESSAGE)
+    try:
+        result = get_qa().ask(question, chat_history=history)
+    finally:
+        _release_llm_slot()
     _finalize_result(session_id, question, result, user_id=payload.user_id)
     return _build_ask_payload(question, result)
 
@@ -617,6 +677,11 @@ def ask_stream(
     history = _get_history(session_id)
 
     def generate():
+        # 并发名额在流开始生成时获取，整个流式过程持有，结束时归还；
+        # 拿不到名额时下发 error 事件后关流（不阻断 HTTP 响应头）。
+        if not _acquire_llm_slot():
+            yield _sse({"type": "error", "error": _LLM_BUSY_MESSAGE})
+            return
         try:
             for event in get_qa().ask_stream(question, chat_history=history):
                 if event.get("type") == "result":
@@ -636,6 +701,8 @@ def ask_stream(
         except Exception:  # noqa: BLE001 - 流式响应中错误必须转为事件下发
             logger.exception("ask_stream 未预期异常")
             yield _sse({"type": "error", "error": "服务暂时不可用，请稍后重试。"})
+        finally:
+            _release_llm_slot()
 
     return StreamingResponse(
         generate(),

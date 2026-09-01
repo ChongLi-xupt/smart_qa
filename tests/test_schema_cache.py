@@ -23,6 +23,7 @@ class FakeDB:
         self.tables_calls = 0
         self.columns_calls = 0
         self.schema_calls: dict[str, int] = {}
+        self.relationships_calls = 0
 
     def _fetch_tables(self, schema=None):
         self.tables_calls += 1
@@ -44,6 +45,17 @@ class FakeDB:
         if table_name not in ("user", "order"):
             raise KeyError(f"no such table: {table_name}")
         return {"name": table_name, "columns": []}
+
+    def _fetch_relationships(self):
+        self.relationships_calls += 1
+        return [
+            {
+                "source_table": "order",
+                "constrained_columns": ["user_id"],
+                "referred_table": "user",
+                "referred_columns": ["id"],
+            }
+        ]
 
     def get_tables(self, *args, **kwargs):
         raise AssertionError("SchemaCache 必须调用 _fetch_* 原始方法，不得回调公开分发方法")
@@ -136,6 +148,58 @@ def test_concurrent_refresh_single_db_call():
         t.join()
     assert not errors, errors
     assert db.tables_calls == 1 and db.columns_calls == 1  # 并发下只刷新一次
+
+
+def test_relationships_lazy_loaded_once():
+    """外键关系懒加载，首次请求后不再重复查库。"""
+    db = FakeDB()
+    cache = SchemaCache(db, ttl=300)
+    for _ in range(3):
+        relationships = cache.get_relationships()
+        assert relationships[0]["referred_table"] == "user"
+    assert db.relationships_calls == 1
+
+
+def test_relationships_expired_with_ttl():
+    """TTL 刷新时外键关系一并失效，下次请求重新拉取。"""
+    db = FakeDB()
+    cache = SchemaCache(db, ttl=300)
+    cache.get_relationships()
+    cache._ts -= 400  # 人为把时间戳拨到 TTL 之外
+    cache.get_relationships()
+    assert db.relationships_calls == 2
+
+
+def test_relationships_cleared_on_invalidate():
+    db = FakeDB()
+    cache = SchemaCache(db, ttl=300)
+    cache.get_relationships()
+    cache.invalidate()
+    cache.get_relationships()
+    assert db.relationships_calls == 2
+
+
+def test_relationships_concurrent_single_fetch():
+    """并发首次请求下只有一个线程真正查库。"""
+    db = FakeDB()
+    cache = SchemaCache(db, ttl=300)
+    barrier = threading.Barrier(8)
+    errors = []
+
+    def worker():
+        try:
+            barrier.wait()
+            cache.get_relationships()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    assert db.relationships_calls == 1
 
 
 if __name__ == "__main__":

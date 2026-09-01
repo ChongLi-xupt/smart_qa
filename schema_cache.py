@@ -44,6 +44,7 @@ class SchemaCache:
         self._tables: list[dict[str, Any]] | None = None
         self._columns: dict[str, list[str]] | None = None
         self._schemas: dict[str, dict[str, Any]] = {}
+        self._relationships: list[dict[str, Any]] | None = None
         self._ts = 0.0
 
     # ------------------------------------------------------------------ #
@@ -83,12 +84,27 @@ class SchemaCache:
             self._schemas[table_name] = info
             return info
 
+    def get_relationships(self) -> list[dict[str, Any]]:
+        """全库外键关系列表（懒加载，随 TTL 一起失效）。
+
+        JOIN 建议仅偶尔需要，不随 TTL 刷新顺带拉取；首次请求时
+        用双重检查锁保证并发下只有一个线程查库。
+        """
+        self._refresh_if_stale()
+        if self._relationships is not None:
+            return list(self._relationships)
+        with self._lock:
+            if self._relationships is None:
+                self._relationships = self._db._fetch_relationships()
+            return list(self._relationships)
+
     def invalidate(self) -> None:
         """清空全部缓存（数据库连接关闭时调用）。"""
         with self._lock:
             self._tables = None
             self._columns = None
             self._schemas = {}
+            self._relationships = None
             self._ts = 0.0
 
     # ------------------------------------------------------------------ #
@@ -108,6 +124,7 @@ class SchemaCache:
             self._tables = self._db._fetch_tables()
             self._columns = self._db._fetch_column_names()
             self._schemas = {}
+            self._relationships = None
             self._ts = time.monotonic()
 
     def _lookup_columns(self, table_name: str) -> list[str] | None:

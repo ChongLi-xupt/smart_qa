@@ -351,6 +351,87 @@ def test_extract_column_aliases_from_steps():
     assert SmartQA._extract_column_aliases([]) == {}
 
 
+# ------------------------------ LLM 并发控制 ------------------------------ #
+
+
+def test_ask_busy_when_llm_concurrency_exhausted():
+    # 并发名额耗尽：快速返回 503「服务繁忙」（模拟本地模型推理服务过载）
+    import threading
+
+    original_semaphore, original_timeout = app._llm_semaphore, app._LLM_QUEUE_TIMEOUT
+    semaphore = threading.BoundedSemaphore(1)
+    semaphore.acquire()  # 占用唯一名额，模拟并发已满
+    app._llm_semaphore = semaphore
+    app._LLM_QUEUE_TIMEOUT = 1
+    try:
+        response = _client.post("/api/v1/ask", json={"question": "一共有多少用户？"})
+        assert response.status_code == 503
+        assert "繁忙" in response.json()["error"]
+    finally:
+        app._llm_semaphore, app._LLM_QUEUE_TIMEOUT = original_semaphore, original_timeout
+
+
+def test_ask_allowed_when_concurrency_slot_available():
+    # 未满员：请求正常执行（敏感拦截在 Agent 前，无需外部服务）
+    import threading
+
+    original_semaphore = app._llm_semaphore
+    app._llm_semaphore = threading.BoundedSemaphore(1)
+    try:
+        response = _client.post("/api/v1/ask", json={"question": "查询所有用户的密码"})
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+    finally:
+        app._llm_semaphore = original_semaphore
+
+
+def test_ask_stream_busy_when_llm_concurrency_exhausted():
+    # 流式端点同样受限：满员时下发 error 事件后关流，不阻塞 HTTP 响应头
+    import threading
+
+    original_semaphore, original_timeout = app._llm_semaphore, app._LLM_QUEUE_TIMEOUT
+    semaphore = threading.BoundedSemaphore(1)
+    semaphore.acquire()
+    app._llm_semaphore = semaphore
+    app._LLM_QUEUE_TIMEOUT = 1
+    try:
+        response = _client.post(
+            "/api/v1/ask_stream", json={"question": "一共有多少用户？"}
+        )
+        assert response.status_code == 200
+        assert '"type": "error"' in response.text
+        assert "繁忙" in response.text
+    finally:
+        app._llm_semaphore, app._LLM_QUEUE_TIMEOUT = original_semaphore, original_timeout
+
+
+def test_max_tokens_from_env_parsing():
+    # LLM_MAX_TOKENS：留空不限制；正整数生效；非法值启动即报错（ConfigError）
+    import smart_qa
+
+    original = os.environ.pop("LLM_MAX_TOKENS", None)
+    try:
+        assert smart_qa._max_tokens_from_env() is None
+        os.environ["LLM_MAX_TOKENS"] = "2048"
+        assert smart_qa._max_tokens_from_env() == 2048
+        os.environ["LLM_MAX_TOKENS"] = "abc"
+        try:
+            smart_qa._max_tokens_from_env()
+            raise AssertionError("非法 LLM_MAX_TOKENS 应抛 ConfigError")
+        except smart_qa.ConfigError:
+            pass
+        os.environ["LLM_MAX_TOKENS"] = "0"
+        try:
+            smart_qa._max_tokens_from_env()
+            raise AssertionError("非正数 LLM_MAX_TOKENS 应抛 ConfigError")
+        except smart_qa.ConfigError:
+            pass
+    finally:
+        os.environ.pop("LLM_MAX_TOKENS", None)
+        if original is not None:
+            os.environ["LLM_MAX_TOKENS"] = original
+
+
 if __name__ == "__main__":
     import sys
 

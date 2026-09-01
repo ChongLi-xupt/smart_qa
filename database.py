@@ -261,6 +261,74 @@ class MySQLDatabase:
             for name in inspector.get_table_names(schema=schema)
         }
 
+    def get_relationships(self) -> list[dict[str, Any]]:
+        """返回全库外键关系列表（默认 schema，TTL 内命中缓存）。"""
+        if self._schema_cache is not None:
+            return self._schema_cache.get_relationships()
+        return self._fetch_relationships()
+
+    def _fetch_relationships(self) -> list[dict[str, Any]]:
+        """直查外键关系的原始实现（供 SchemaCache 刷新/回退调用）。"""
+        inspector = inspect(self._engine)
+        relationships: list[dict[str, Any]] = []
+        for table_name in inspector.get_table_names():
+            for foreign_key in inspector.get_foreign_keys(table_name):
+                referred_table = foreign_key.get("referred_table")
+                if not referred_table:
+                    continue
+                relationships.append(
+                    {
+                        "source_table": table_name,
+                        "constrained_columns": list(
+                            foreign_key.get("constrained_columns") or []
+                        ),
+                        "referred_table": referred_table,
+                        "referred_columns": list(
+                            foreign_key.get("referred_columns") or []
+                        ),
+                    }
+                )
+        return relationships
+
+    def get_join_suggestions(self, table_name: str) -> list[str]:
+        """基于外键关系为指定表生成可直接使用的 JOIN 子句。
+
+        双向匹配外键（本表引用他表、他表引用本表都会命中），
+        直接给出关联条件，避免大模型在多表查询中猜测关联字段。
+        数据库异常或列信息缺失时返回空列表，不影响 schema 输出主流程。
+        """
+        try:
+            relationships = self.get_relationships()
+        except SQLAlchemyError:
+            return []
+
+        lowered = (table_name or "").strip().lower()
+        suggestions: list[str] = []
+        for relationship in relationships:
+            source_table = str(relationship.get("source_table") or "")
+            referred_table = str(relationship.get("referred_table") or "")
+            source_columns = list(relationship.get("constrained_columns") or [])
+            referred_columns = list(relationship.get("referred_columns") or [])
+            if (
+                not source_table
+                or not referred_table
+                or not source_columns
+                or len(source_columns) != len(referred_columns)
+            ):
+                continue
+            if source_table.lower() == lowered:
+                other_table = referred_table
+            elif referred_table.lower() == lowered:
+                other_table = source_table
+            else:
+                continue
+            conditions = " AND ".join(
+                f"{source_table}.{source_column} = {referred_table}.{referred_column}"
+                for source_column, referred_column in zip(source_columns, referred_columns)
+            )
+            suggestions.append(f"JOIN {other_table} ON {conditions}")
+        return suggestions
+
     def execute_readonly(
         self,
         query: str,

@@ -68,7 +68,8 @@ class TablesSchemaTool(BaseTool):
     name: str = "sql_db_schema"
     description: str = (
         "获取一个或多个 MySQL 数据库表的 schema 结构，包括表备注、字段名称、"
-        "字段类型、是否允许为空、默认值、主键、外键、索引和唯一约束。"
+        "字段类型、是否允许为空、默认值、主键、外键、索引、唯一约束，以及"
+        "基于外键推导的可关联表 JOIN 建议。"
         "调用时必须通过 table_names 传入表名列表；可先调用 sql_db_list_tables "
         "获取准确的表名。"
     )
@@ -222,6 +223,17 @@ class TablesSchemaTool(BaseTool):
                 f"  {index}. {constraint.get('name') or '-'} | "
                 f"字段: {constraint_columns or '-'}"
             )
+
+        # JOIN 建议（由外键关系推导）：直接把关联条件交给大模型，
+        # 避免多表查询时猜测关联字段；异常时返回空列表不阻断主流程。
+        output_lines.extend(("", "可关联的表（JOIN 建议）:"))
+        join_suggestions = self.db_manager.get_join_suggestions(
+            str(schema_info.get("name") or normalized_name)
+        )
+        if not join_suggestions:
+            output_lines.append("  无外键关联建议")
+        for index, suggestion in enumerate(join_suggestions, start=1):
+            output_lines.append(f"  {index}. {suggestion}")
 
         return "\n".join(output_lines)
 

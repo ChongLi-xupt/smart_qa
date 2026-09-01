@@ -121,6 +121,7 @@ DEFAULT_SYSTEM_PROMPT = """你是一位资深的数据分析助手"智慧问数"
 - 表名、字段名如果是 MySQL 关键字或含特殊字符，请用反引号 `` ` `` 包裹；
 - 涉及时间的过滤、分组、排序，请使用 MySQL 日期函数（如 DATE()、DATE_FORMAT()、YEAR()、NOW()、INTERVAL 等）；
 - 字段含义请优先参考字段备注；模糊匹配用 LIKE 且尽量精确；
+- 多表关联查询时，请优先直接使用 `sql_db_schema` 返回的“可关联的表（JOIN 建议）”中给出的 JOIN 子句，不要自行猜测关联字段；
 - 只查询回答问题所需的最少数据，避免 SELECT * 和返回过多行。
 
 最终回答格式（直接用中文回答用户，不要暴露内部思考）：
@@ -153,6 +154,9 @@ class LLMConfig:
     model: str = "deepseek-chat"
     temperature: float = 0.0
     request_timeout: int = 60
+    # 单次生成的最大 token 数；本地模型是输出速度受限，限制输出长度能显著
+    # 缩短每次推理占用时间、提升并发吞吐。None 表示不限制（沿用服务端默认）。
+    max_tokens: int | None = None
 
 
 class SmartQA:
@@ -210,13 +214,17 @@ class SmartQA:
     # ------------------------------------------------------------------ #
 
     def _build_llm(self) -> ChatOpenAI:
-        return ChatOpenAI(
-            api_key=self.llm_config.api_key,
-            base_url=self.llm_config.base_url,
-            model=self.llm_config.model,
-            temperature=self.llm_config.temperature,
-            request_timeout=self.llm_config.request_timeout,
-        )
+        llm_kwargs: dict[str, Any] = {
+            "api_key": self.llm_config.api_key,
+            "base_url": self.llm_config.base_url,
+            "model": self.llm_config.model,
+            "temperature": self.llm_config.temperature,
+            "request_timeout": self.llm_config.request_timeout,
+        }
+        # 未配置时不传该参数，保持云端 API 的默认行为不变
+        if self.llm_config.max_tokens:
+            llm_kwargs["max_tokens"] = self.llm_config.max_tokens
+        return ChatOpenAI(**llm_kwargs)
 
     def _build_tools(self) -> list[Any]:
         return [
@@ -587,6 +595,24 @@ def _classify_agent_error(exc: Exception) -> SmartQAError:
 # 交互式命令行入口
 # ---------------------------------------------------------------------- #
 
+def _max_tokens_from_env() -> int | None:
+    """解析 LLM_MAX_TOKENS：未设置/留空时不限制，非法值启动即报错。"""
+    raw_value = os.getenv("LLM_MAX_TOKENS", "").strip()
+    if not raw_value:
+        return None
+    try:
+        max_tokens = int(raw_value)
+    except ValueError:
+        raise ConfigError(
+            f"LLM_MAX_TOKENS 必须是正整数，当前值: {raw_value!r}"
+        ) from None
+    if max_tokens <= 0:
+        raise ConfigError(
+            f"LLM_MAX_TOKENS 必须是正整数，当前值: {max_tokens}"
+        )
+    return max_tokens
+
+
 def _config_from_env() -> tuple[DatabaseConfig, LLMConfig]:
     """从环境变量（或项目根目录 .env 文件）读取数据库与大模型配置。
 
@@ -638,6 +664,7 @@ def _config_from_env() -> tuple[DatabaseConfig, LLMConfig]:
         model=os.getenv("LLM_MODEL", "deepseek-chat"),
         temperature=float(os.getenv("LLM_TEMPERATURE", "0.0")),
         request_timeout=int(os.getenv("LLM_TIMEOUT", "60")),
+        max_tokens=_max_tokens_from_env(),
     )
     return db_config, llm_config
 

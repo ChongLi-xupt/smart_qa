@@ -24,7 +24,8 @@
   3. SQL 静态校验（sqlglot AST：仅单条 SELECT，拒绝 DML/DDL/多语句/加锁/INTO OUTFILE）
   4. 权限边界（只读数据库账号 + 会话级 `max_execution_time` + 强制 LIMIT）
   5. 结果级敏感列过滤（SELECT * 带出的敏感字段自动剔除）
-- **防幻觉**：SQL 引用的表/字段与真实 schema 核对，杜绝编造查询结果
+- **防幻觉**：基于 sqlglot AST 将 SQL 引用的表/字段与真实 schema 核对（覆盖多表 JOIN、子查询、CTE、UNION，并可检出多表同名列歧义），杜绝编造查询结果；错误信息附真实字段清单，引导模型自行修正而非盲目重试
+- **复杂查询支持**：由外键推导表关系图（懒加载进 schema TTL 缓存），`sql_db_schema` 工具输出附带“可关联的表（JOIN 建议）”，直接给出可用的 JOIN 子句（含复合外键、双向匹配），模型无需猜测关联字段，减少多表查询的工具轮次与重试
 - **可观测性**：request_id 全链路追踪、每请求耗时/token 用量日志、`/healthz` 健康检查
 
 ## 系统架构
@@ -57,7 +58,7 @@ flowchart LR
     end
     subgraph 工具层[agent_tools.py · 5 个工具]
         T1[list_tables]
-        T2[schema]
+        T2[schema + JOIN 建议]
         T3[checker · EXPLAIN]
         T4[execute]
         T5[report_column_aliases<br/>列中文名上报]
@@ -130,8 +131,8 @@ flowchart TB
 ├── smart_qa.py             # SmartQA Agent 封装（LangChain create_agent + 流式生成器）
 ├── database.py             # MySQL 连接与元数据读取（SQLAlchemy，只读入口）
 ├── agent_tools.py          # 供 Agent 调用的 5 个 LangChain 工具（薄封装，含列别名上报）
-├── sql_guard.py            # SQL 安全护栏唯一入口（AST 校验/敏感字段/防幻觉/LIMIT）
-├── schema_cache.py         # schema 元数据 TTL 缓存
+├── sql_guard.py            # SQL 安全护栏唯一入口（AST 校验/敏感字段/防幻觉含歧义列检测/LIMIT）
+├── schema_cache.py         # schema 元数据 TTL 缓存（表/字段/外键关系）
 ├── chat_store.py           # 会话历史存储（内存 / Redis 双后端，含会话列表与完整回放）
 ├── rag.py                  # RAG 检索：few-shot 示例召回 + 术语表加载（零依赖）
 ├── rag/                    # examples.jsonl 示例语料 + glossary.md 业务术语表
@@ -222,6 +223,13 @@ uvicorn app:app --host 0.0.0.0 --port 5000 --workers 2
   （`.env` 中 `HISTORY_BACKEND=redis` + `REDIS_URL`），否则同一浏览器的
   请求落到不同 worker 会丢失会话上下文
 - 建议 systemd/supervisor 托管，日志输出到 stdout 由其收集
+- **本地模型部署**（vLLM/Ollama 等 OpenAI 兼容推理服务）：`.env` 中把 `LLM_BASE_URL`
+  指向推理服务地址、`LLM_API_KEY` 填任意占位值即可，代码无需改动；同时建议：
+  - `LLM_MAX_CONCURRENCY` 按显卡实测吞吐设置同时在执行的提问数（如 4~8），
+    满员后排队等待超时快速返回“服务繁忙”，避免请求在推理服务堆积雪崩；
+  - `LLM_MAX_TOKENS` 限制单次生成长度（如 2048），本地模型输出速度受限，
+    缩短输出能显著提升并发吞吐；
+  - `LLM_TIMEOUT` 放宽到 180~300 秒（本地推理慢且单次提问为多轮调用）
 
 ## 开发工具
 
